@@ -1,0 +1,52 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Global default-deny safety net: no public reads or writes anywhere in the bucket
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+
+    function isSafeStorageId(id) {
+      return id is string &&
+        id.size() >= 3 &&
+        id.size() <= 128 &&
+        id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isVerifiedOwner(userId) {
+      return request.auth != null &&
+        request.auth.token.email_verified == true &&
+        request.auth.uid == userId;
+    }
+
+    function isValidDocumentUpload(userId, docId) {
+      return request.resource != null &&
+        request.resource.size > 0 &&
+        request.resource.size <= 8 * 1024 * 1024 &&
+        request.resource.contentType in [
+          'application/pdf',
+          'image/jpeg',
+          'image/png'
+        ] &&
+        request.resource.metadata != null &&
+        request.resource.metadata.userId == userId &&
+        request.resource.metadata.docId == docId;
+    }
+
+    // Strictly owner-isolated private student documents; directory listing disabled
+    match /private-documents/{userId}/{docId} {
+      allow get: if isSafeStorageId(userId) &&
+        isSafeStorageId(docId) &&
+        isVerifiedOwner(userId);
+      allow list: if false;
+      allow create, update: if isSafeStorageId(userId) &&
+        isSafeStorageId(docId) &&
+        isVerifiedOwner(userId) &&
+        isValidDocumentUpload(userId, docId);
+      allow delete: if isSafeStorageId(userId) &&
+        isSafeStorageId(docId) &&
+        isVerifiedOwner(userId);
+    }
+  }
+}

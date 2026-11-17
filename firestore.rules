@@ -1,0 +1,1102 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global safety net: deny everything by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Core identity and validation helpers
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isSuperAdmin() {
+      return isVerified() && (
+        request.auth.token.email == 'jiyakumari2480@gmail.com' ||
+        (
+          exists(/databases/$(database)/documents/user_roles/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/user_roles/$(request.auth.uid)).data.role == 'super_admin' &&
+          get(/databases/$(database)/documents/user_roles/$(request.auth.uid)).data.get('status', 'active') != 'disabled'
+        )
+      );
+    }
+
+    function isAdmin() {
+      return isSuperAdmin() || (
+        isVerified() &&
+        exists(/databases/$(database)/documents/user_roles/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/user_roles/$(request.auth.uid)).data.role in ['admin', 'super_admin'] &&
+        get(/databases/$(database)/documents/user_roles/$(request.auth.uid)).data.get('status', 'active') != 'disabled'
+      );
+    }
+
+    function isValidString(val, minLen, maxLen) {
+      return val is string && val.size() >= minLen && val.size() <= maxLen;
+    }
+
+    function isValidOptionalString(val, maxLen) {
+      return val == null || (val is string && val.size() <= maxLen);
+    }
+
+    function isValidStringList(listVal, maxItems) {
+      return listVal is list && listVal.size() <= maxItems && (listVal.size() == 0 || listVal[0] is string);
+    }
+
+    // Entity validators
+    function isValidProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'fullName', 'email', 'onboardingCompleted', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'uid', 'fullName', 'email', 'phone', 'state', 'district', 'dateOfBirth',
+          'gender', 'category', 'disabilityStatus', 'disabilityDetails',
+          'educationLevel', 'courseSpecialization', 'institutionName', 'collegeLocation',
+          'academicYear', 'currentSemesterOrYear', 'previousMarksPercent',
+          'familyAnnualIncomeInr', 'parentOccupation', 'hostelStatus',
+          'certificates', 'onboardingCompleted', 'createdAt', 'updatedAt'
+        ]) &&
+        data.uid == userId &&
+        isValidString(data.fullName, 1, 160) &&
+        isValidString(data.email, 3, 200) &&
+        isValidOptionalString(data.get('phone', null), 20) &&
+        isValidOptionalString(data.get('state', null), 80) &&
+        isValidOptionalString(data.get('district', null), 80) &&
+        isValidOptionalString(data.get('dateOfBirth', null), 20) &&
+        isValidOptionalString(data.get('gender', null), 40) &&
+        isValidOptionalString(data.get('category', null), 40) &&
+        isValidOptionalString(data.get('disabilityStatus', null), 60) &&
+        isValidOptionalString(data.get('disabilityDetails', null), 240) &&
+        isValidOptionalString(data.get('educationLevel', null), 60) &&
+        isValidOptionalString(data.get('courseSpecialization', null), 160) &&
+        isValidOptionalString(data.get('institutionName', null), 200) &&
+        isValidOptionalString(data.get('collegeLocation', null), 160) &&
+        isValidOptionalString(data.get('academicYear', null), 30) &&
+        isValidOptionalString(data.get('currentSemesterOrYear', null), 40) &&
+        (data.get('previousMarksPercent', null) == null || data.previousMarksPercent is number) &&
+        (data.get('familyAnnualIncomeInr', null) == null || data.familyAnnualIncomeInr is number) &&
+        isValidOptionalString(data.get('parentOccupation', null), 160) &&
+        isValidOptionalString(data.get('hostelStatus', null), 40) &&
+        (data.get('certificates', null) == null || isValidStringList(data.certificates, 20)) &&
+        data.onboardingCompleted is bool &&
+        isValidString(data.createdAt, 10, 40) &&
+        isValidString(data.updatedAt, 10, 40);
+    }
+
+    function isValidUserRole(data, userId) {
+      return data.keys().hasAll(['uid', 'role', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'uid', 'role', 'email', 'displayName', 'status',
+          'assignedBy', 'assignedByEmail', 'createdAt', 'updatedAt'
+        ]) &&
+        data.uid == userId &&
+        data.role in ['student', 'admin', 'super_admin', 'reviewer'] &&
+        isValidOptionalString(data.get('email', null), 200) &&
+        isValidOptionalString(data.get('displayName', null), 160) &&
+        (data.get('status', null) == null || data.status in ['active', 'disabled']) &&
+        isValidOptionalString(data.get('assignedBy', null), 128) &&
+        isValidOptionalString(data.get('assignedByEmail', null), 200) &&
+        isValidString(data.createdAt, 10, 40) &&
+        isValidString(data.updatedAt, 10, 40);
+    }
+
+    function isValidScholarship(data, scholarshipId) {
+      return data.keys().hasAll(['id', 'title', 'provider', 'scholarshipType', 'officialUrl', 'verificationStatus', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'id', 'title', 'provider', 'scholarshipType', 'description', 'benefitsSummary',
+          'financialBenefitsText', 'annualAwardInr', 'eligibilitySummary', 'academicRequirements',
+          'minIncomeLimitInr', 'incomeLimitInr', 'educationLevels', 'eligibleCourses',
+          'allowedCategories', 'eligibleStates', 'minMarksPercent', 'genderRestriction',
+          'disabilityRequired', 'requiredDocuments', 'applicationStartDate', 'applicationDeadline',
+          'applicationProcess', 'applicationStatus', 'deadlineStatus', 'officialUrl',
+          'officialSourceUrl', 'verificationStatus', 'lastVerifiedDate', 'sourceNotes',
+          'sourceName', 'retrievedAt', 'verifiedByUid', 'verifiedByEmail',
+          'verificationNotes', 'sourceEvidence', 'isActive', 'archivedAt',
+          'archivedByUid', 'activeRuleVersion', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == scholarshipId &&
+        isValidString(data.title, 2, 240) &&
+        isValidString(data.provider, 2, 200) &&
+        data.scholarshipType in [
+          'Central Government', 'State Government', 'Private', 'Corporate',
+          'University', 'Merit-Based', 'Need-Based', 'Category-Based', 'Private Foundation'
+        ] &&
+        isValidOptionalString(data.get('description', null), 2000) &&
+        isValidOptionalString(data.get('benefitsSummary', null), 800) &&
+        isValidOptionalString(data.get('financialBenefitsText', null), 800) &&
+        (data.get('annualAwardInr', null) == null || data.annualAwardInr is number) &&
+        isValidOptionalString(data.get('eligibilitySummary', null), 1500) &&
+        isValidOptionalString(data.get('academicRequirements', null), 600) &&
+        (data.get('minIncomeLimitInr', null) == null || data.minIncomeLimitInr is number) &&
+        (data.get('incomeLimitInr', null) == null || data.incomeLimitInr is number) &&
+        (data.get('educationLevels', null) == null || isValidStringList(data.educationLevels, 15)) &&
+        (data.get('eligibleCourses', null) == null || isValidStringList(data.eligibleCourses, 25)) &&
+        (data.get('allowedCategories', null) == null || isValidStringList(data.allowedCategories, 15)) &&
+        (data.get('eligibleStates', null) == null || isValidStringList(data.eligibleStates, 40)) &&
+        (data.get('minMarksPercent', null) == null || data.minMarksPercent is number) &&
+        isValidOptionalString(data.get('genderRestriction', null), 20) &&
+        (data.get('disabilityRequired', null) == null || data.disabilityRequired is bool) &&
+        (data.get('requiredDocuments', null) == null || isValidStringList(data.requiredDocuments, 25)) &&
+        isValidOptionalString(data.get('applicationStartDate', null), 60) &&
+        isValidOptionalString(data.get('applicationDeadline', null), 60) &&
+        isValidOptionalString(data.get('applicationProcess', null), 1500) &&
+        (data.get('applicationStatus', null) == null || data.applicationStatus in [
+          'Currently accepting applications', 'Upcoming', 'Closed', 'Expired', 'Status unknown'
+        ]) &&
+        isValidOptionalString(data.get('deadlineStatus', null), 60) &&
+        isValidString(data.officialUrl, 8, 500) &&
+        isValidOptionalString(data.get('officialSourceUrl', null), 500) &&
+        data.verificationStatus in [
+          'Unverified', 'Pending Review', 'Verified', 'Needs Correction', 'Expired', 'Archived',
+          'Pending verification', 'Needs verification', 'Verified Official Source'
+        ] &&
+        isValidOptionalString(data.get('lastVerifiedDate', null), 40) &&
+        isValidOptionalString(data.get('sourceNotes', null), 600) &&
+        isValidOptionalString(data.get('sourceName', null), 200) &&
+        isValidOptionalString(data.get('retrievedAt', null), 40) &&
+        isValidOptionalString(data.get('verifiedByUid', null), 128) &&
+        isValidOptionalString(data.get('verifiedByEmail', null), 200) &&
+        isValidOptionalString(data.get('verificationNotes', null), 1000) &&
+        isValidOptionalString(data.get('sourceEvidence', null), 1500) &&
+        (data.get('isActive', null) == null || data.isActive is bool) &&
+        isValidOptionalString(data.get('archivedAt', null), 40) &&
+        isValidOptionalString(data.get('archivedByUid', null), 128) &&
+        (data.get('activeRuleVersion', null) == null || data.activeRuleVersion is number) &&
+        isValidString(data.createdAt, 10, 40) &&
+        isValidString(data.updatedAt, 10, 40);
+    }
+
+    function isValidEligibilityRule(data, ruleId) {
+      return data.keys().hasAll(['id', 'scholarshipId', 'ruleKey', 'ruleLabel', 'operator', 'ruleValue', 'isMandatory', 'createdAt']) &&
+        data.keys().hasOnly([
+          'id', 'scholarshipId', 'ruleKey', 'ruleLabel', 'operator', 'ruleValue',
+          'isMandatory', 'isActive', 'versionNumber', 'description', 'updatedByUid',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.id == ruleId &&
+        isValidId(data.scholarshipId) &&
+        isValidString(data.ruleKey, 1, 80) &&
+        isValidString(data.ruleLabel, 1, 200) &&
+        data.operator in ['lte', 'gte', 'in', 'eq', 'neq', 'contains'] &&
+        isValidString(data.ruleValue, 1, 300) &&
+        data.isMandatory is bool &&
+        (data.get('isActive', null) == null || data.isActive is bool) &&
+        (data.get('versionNumber', null) == null || data.versionNumber is number) &&
+        isValidOptionalString(data.get('description', null), 500) &&
+        isValidOptionalString(data.get('updatedByUid', null), 128) &&
+        isValidString(data.createdAt, 10, 40) &&
+        isValidOptionalString(data.get('updatedAt', null), 40);
+    }
+
+    function isValidApplication(data, applicationId) {
+      return data.keys().hasAll(['id', 'userId', 'scholarshipId', 'scholarshipTitle', 'status', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'id', 'userId', 'scholarshipId', 'scholarshipTitle', 'provider', 'status',
+          'portalReferenceId', 'deadline', 'notes', 'submissionDate',
+          'submissionConfirmedByStudent', 'submissionConfirmedAt', 'portalOpenedAt',
+          'finalOutcome', 'correctionNotes', 'lastStatusChangedAt', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == applicationId &&
+        data.userId == request.auth.uid &&
+        isValidId(data.scholarshipId) &&
+        isValidString(data.scholarshipTitle, 2, 240) &&
+        isValidOptionalString(data.get('provider', null), 200) &&
+        data.status in [
+          'Interested', 'Preparing', 'Documents Pending', 'Ready to Apply',
+          'Submitted', 'Under Review', 'Correction Required', 'Approved',
+          'Rejected', 'Withdrawn', 'Closed', 'Draft', 'Documents Ready', 'Awarded'
+        ] &&
+        isValidOptionalString(data.get('portalReferenceId', null), 120) &&
+        isValidOptionalString(data.get('deadline', null), 60) &&
+        isValidOptionalString(data.get('notes', null), 2000) &&
+        isValidOptionalString(data.get('submissionDate', null), 40) &&
+        (data.get('submissionConfirmedByStudent', null) == null || data.submissionConfirmedByStudent is bool) &&
+        isValidOptionalString(data.get('submissionConfirmedAt', null), 40) &&
+        isValidOptionalString(data.get('portalOpenedAt', null), 40) &&
+        isValidOptionalString(data.get('finalOutcome', null), 300) &&
+        isValidOptionalString(data.get('correctionNotes', null), 1000) &&
+        isValidOptionalString(data.get('lastStatusChangedAt', null), 40) &&
+        isValidString(data.createdAt, 10, 40) &&
+        isValidString(data.updatedAt, 10, 40);
+    }
+
+    function isValidApplicationEvent(data, eventId) {
+      return data.keys().hasAll(['id', 'applicationId', 'userId', 'scholarshipId', 'eventType', 'description', 'source', 'actorUid', 'createdAt']) &&
+        data.keys().hasOnly([
+          'id', 'applicationId', 'userId', 'scholarshipId', 'eventType',
+          'fromStatus', 'toStatus', 'description', 'source', 'actorUid', 'createdAt'
+        ]) &&
+        data.id == eventId &&
+        isValidId(data.applicationId) &&
+        data.userId == request.auth.uid &&
+        isValidId(data.scholarshipId) &&
+        data.eventType in [
+          'Application Added', 'Preparation Started', 'Document Linked',
+          'Checklist Updated', 'Marked Ready', 'External Portal Opened',
+          'Submission Confirmed', 'Status Changed', 'Correction Requested',
+          'Final Outcome Recorded', 'Notes Updated'
+        ] &&
+        isValidOptionalString(data.get('fromStatus', null), 60) &&
+        isValidOptionalString(data.get('toStatus', null), 60) &&
+        isValidString(data.description, 1, 600) &&
+        data.source in ['student', 'system', 'admin'] &&
+        data.actorUid == request.auth.uid &&
+        isValidString(data.createdAt, 10, 40);
+    }
+
+    function isValidApplicationChecklistItem(data, itemId) {
+      return data.keys().hasAll(['id', 'applicationId', 'userId', 'scholarshipId', 'requirementName', 'isCompleted', 'manualStatus', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'id', 'applicationId', 'userId', 'scholarshipId', 'requirementName',
+          'isCompleted', 'manualStatus', 'notes', 'linkedDocumentId', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == itemId &&
+        isValidId(data.applicationId) &&
+        data.userId == request.auth.uid &&
+        isValidId(data.scholarshipId) &&
+        isValidString(data.requirementName, 1, 200) &&
+        data.isCompleted is bool &&
+        data.manualStatus in ['Pending', 'Completed', 'Needs Attention'] &&
+        isValidOptionalString(data.get('notes', null), 500) &&
+        isValidOptionalString(data.get('linkedDocumentId', null), 128) &&
+        isValidString(data.createdAt, 10, 40) &&
+        isValidString(data.updatedAt, 10, 40);
+    }
+
+    function isValidSavedScholarship(data, savedId) {
+      return data.keys().hasAll(['id', 'userId', 'scholarshipId', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'userId', 'scholarshipId', 'createdAt']) &&
+        data.id == savedId &&
+        data.userId == request.auth.uid &&
+        isValidId(data.scholarshipId) &&
+        isValidString(data.createdAt, 10, 40);
+    }
+
+    function isValidDocument(data, documentId) {
+      return data.keys().hasAll(['id', 'userId', 'documentType', 'fileName', 'storagePath', 'verificationStatus', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'id', 'userId', 'documentType', 'fileName', 'mimeType', 'fileSizeBytes',
+          'storagePath', 'downloadUrl', 'storageProvider', 'verificationStatus',
+          'processingStatus', 'errorDetails', 'lastAnalyzedAt', 'pageCount',
+          'extractionMethod', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == documentId &&
+        isValidString(data.userId, 1, 128) &&
+        (data.userId == request.auth.uid || isAdmin()) &&
+        isValidString(data.documentType, 2, 100) &&
+        isValidString(data.fileName, 1, 240) &&
+        isValidOptionalString(data.get('mimeType', null), 120) &&
+        (data.get('fileSizeBytes', null) == null || data.fileSizeBytes is number) &&
+        isValidString(data.storagePath, 3, 500) &&
+        isValidOptionalString(data.get('downloadUrl', null), 1000) &&
+        (data.get('storageProvider', null) == null || data.storageProvider in ['private-vault', 'firebase-storage']) &&
+        data.verificationStatus in ['Uploaded', 'Analyzed', 'Needs Attention', 'Verified'] &&
+        (data.get('processingStatus', null) == null || data.processingStatus in ['Pending', 'Processing', 'Completed', 'Failed', 'Needs Review']) &&
+        isValidOptionalString(data.get('errorDetails', null), 800) &&
+        isValidOptionalString(data.get('lastAnalyzedAt', null), 40) &&
+        (data.get('pageCount', null) == null || (data.pageCount is number && data.pageCount >= 0 && data.pageCount <= 500)) &&
+        isValidOptionalString(data.get('extractionMethod', null), 80) &&
+        isValidString(data.createdAt, 10, 40) &&
+        isValidString(data.updatedAt, 10, 40);
+    }
+
+    function isValidDocumentAnalysis(data, analysisId) {
+      return data.keys().hasAll(['id', 'userId', 'documentId', 'detectedType', 'readinessVerdict', 'createdAt']) &&
+        data.keys().hasOnly([
+          'id', 'userId', 'documentId', 'detectedType', 'readabilityStatus',
+          'extractionMethod', 'pageCount', 'rawTextPreview', 'issuingAuthority',
+          'validityNotes', 'expiryWarning', 'overallConfidence', 'extractedFields',
+          'marksheetSummary', 'missingFields', 'unreadableFields', 'profileMismatches',
+          'manualVerificationItems', 'issuesFound', 'recommendations',
+          'readinessVerdict', 'disclaimer', 'createdAt'
+        ]) &&
+        data.id == analysisId &&
+        isValidString(data.userId, 1, 128) &&
+        (data.userId == request.auth.uid || isAdmin()) &&
+        isValidId(data.documentId) &&
+        isValidString(data.detectedType, 1, 120) &&
+        (data.get('readabilityStatus', null) == null || data.readabilityStatus in ['Readable', 'Partially Readable', 'Unreadable']) &&
+        isValidOptionalString(data.get('extractionMethod', null), 80) &&
+        (data.get('pageCount', null) == null || (data.pageCount is number && data.pageCount >= 0 && data.pageCount <= 500)) &&
+        isValidOptionalString(data.get('rawTextPreview', null), 2500) &&
+        isValidOptionalString(data.get('issuingAuthority', null), 200) &&
+        isValidOptionalString(data.get('validityNotes', null), 500) &&
+        isValidOptionalString(data.get('expiryWarning', null), 400) &&
+        (data.get('overallConfidence', null) == null || data.overallConfidence in ['High', 'Medium', 'Low']) &&
+        (data.get('extractedFields', null) == null || (data.extractedFields is list && data.extractedFields.size() <= 60)) &&
+        (data.get('marksheetSummary', null) == null || (
+          data.marksheetSummary is map &&
+          data.marksheetSummary.keys().size() <= 20 &&
+          data.marksheetSummary.get('subjects', []) is list &&
+          data.marksheetSummary.get('subjects', []).size() <= 30 &&
+          data.marksheetSummary.get('confirmationStatus', 'Auto-Calculated') in ['Auto-Calculated', 'Needs Confirmation', 'Confirmed by Student']
+        )) &&
+        (data.get('missingFields', null) == null || isValidStringList(data.missingFields, 30)) &&
+        (data.get('unreadableFields', null) == null || isValidStringList(data.unreadableFields, 30)) &&
+        (data.get('profileMismatches', null) == null || isValidStringList(data.profileMismatches, 20)) &&
+        (data.get('manualVerificationItems', null) == null || isValidStringList(data.manualVerificationItems, 20)) &&
+        (data.get('issuesFound', null) == null || isValidStringList(data.issuesFound, 20)) &&
+        (data.get('recommendations', null) == null || isValidStringList(data.recommendations, 20)) &&
+        data.readinessVerdict in ['Ready', 'Needs Clarification', 'Incomplete'] &&
+        isValidOptionalString(data.get('disclaimer', null), 400) &&
+        isValidString(data.createdAt, 10, 40);
+    }
+
+    function isValidEligibilityAssessment(data, assessmentId) {
+      return data.keys().hasAll(['id', 'userId', 'scholarshipId', 'overallStatus', 'createdAt']) &&
+        data.keys().hasOnly([
+          'id', 'userId', 'scholarshipId', 'scholarshipTitle', 'overallStatus',
+          'compatibilityScore', 'passedCriteria', 'failedCriteria', 'unknownCriteria',
+          'notApplicableCriteria', 'scoreFormulaSummary', 'criteriaBreakdown',
+          'aiExplanation', 'ruleVersionUsed', 'rulesAppliedCount', 'createdAt'
+        ]) &&
+        data.id == assessmentId &&
+        data.userId == request.auth.uid &&
+        isValidId(data.scholarshipId) &&
+        isValidOptionalString(data.get('scholarshipTitle', null), 240) &&
+        data.overallStatus in [
+          'Eligible', 'Potentially Eligible', 'Not Eligible',
+          'Insufficient Information', 'Scholarship Status Unverified', 'Partially Eligible'
+        ] &&
+        (data.get('compatibilityScore', null) == null || (data.compatibilityScore is number && data.compatibilityScore >= 0 && data.compatibilityScore <= 100)) &&
+        (data.get('passedCriteria', null) == null || isValidStringList(data.passedCriteria, 25)) &&
+        (data.get('failedCriteria', null) == null || isValidStringList(data.failedCriteria, 25)) &&
+        (data.get('unknownCriteria', null) == null || isValidStringList(data.unknownCriteria, 25)) &&
+        (data.get('notApplicableCriteria', null) == null || isValidStringList(data.notApplicableCriteria, 25)) &&
+        isValidOptionalString(data.get('scoreFormulaSummary', null), 500) &&
+        (data.get('criteriaBreakdown', null) == null || (data.criteriaBreakdown is list && data.criteriaBreakdown.size() <= 25)) &&
+        isValidOptionalString(data.get('aiExplanation', null), 4000) &&
+        (data.get('ruleVersionUsed', null) == null || data.ruleVersionUsed is number) &&
+        (data.get('rulesAppliedCount', null) == null || data.rulesAppliedCount is number) &&
+        isValidString(data.createdAt, 10, 40);
+    }
+
+    function isValidEligibilityAssessmentDetail(data, detailId) {
+      return data.keys().hasAll(['id', 'assessmentId', 'userId', 'scholarshipId', 'criterion', 'status', 'detail', 'createdAt']) &&
+        data.keys().hasOnly([
+          'id', 'assessmentId', 'userId', 'scholarshipId', 'criterion',
+          'status', 'detail', 'missingFieldKey', 'missingFieldReason', 'createdAt'
+        ]) &&
+        data.id == detailId &&
+        isValidId(data.assessmentId) &&
+        data.userId == request.auth.uid &&
+        isValidId(data.scholarshipId) &&
+        isValidString(data.criterion, 1, 160) &&
+        data.status in ['Passed', 'Failed', 'Unknown', 'Not Applicable'] &&
+        isValidString(data.detail, 1, 800) &&
+        isValidOptionalString(data.get('missingFieldKey', null), 80) &&
+        isValidOptionalString(data.get('missingFieldReason', null), 400) &&
+        isValidString(data.createdAt, 10, 40);
+    }
+
+    function isValidReadinessAssessment(data, assessmentId) {
+      return data.keys().hasAll(['id', 'userId', 'readinessPercent', 'createdAt']) &&
+        data.keys().hasOnly([
+          'id', 'userId', 'readinessPercent', 'overallScore', 'assessmentStatus',
+          'algorithmVersion', 'dataFingerprint', 'dataAvailabilityWarning', 'disclaimer',
+          'profileCompletenessPercent', 'documentCoveragePercent',
+          'dimensionScores', 'completedRequirements', 'incompleteRequirements',
+          'deductionReasons', 'missingItems', 'scholarshipReadiness',
+          'recommendedActions', 'aiActionPlan', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == assessmentId &&
+        data.userId == request.auth.uid &&
+        data.readinessPercent is number && data.readinessPercent >= 0 && data.readinessPercent <= 100 &&
+        (data.get('overallScore', null) == null || (data.overallScore is number && data.overallScore >= 0 && data.overallScore <= 100)) &&
+        (data.get('assessmentStatus', null) == null || data.assessmentStatus in ['Ready', 'Partially Ready', 'Needs Preparation', 'Assessment Incomplete', 'No Scholarship Data']) &&
+        isValidOptionalString(data.get('algorithmVersion', null), 60) &&
+        isValidOptionalString(data.get('dataFingerprint', null), 60) &&
+        isValidOptionalString(data.get('dataAvailabilityWarning', null), 600) &&
+        isValidOptionalString(data.get('disclaimer', null), 500) &&
+        (data.get('profileCompletenessPercent', null) == null || (data.profileCompletenessPercent is number && data.profileCompletenessPercent >= 0 && data.profileCompletenessPercent <= 100)) &&
+        (data.get('documentCoveragePercent', null) == null || (data.documentCoveragePercent is number && data.documentCoveragePercent >= 0 && data.documentCoveragePercent <= 100)) &&
+        (data.get('dimensionScores', null) == null || (data.dimensionScores is list && data.dimensionScores.size() <= 10 && (data.dimensionScores.size() == 0 || data.dimensionScores[0] is map))) &&
+        (data.get('completedRequirements', null) == null || isValidStringList(data.completedRequirements, 60)) &&
+        (data.get('incompleteRequirements', null) == null || isValidStringList(data.incompleteRequirements, 60)) &&
+        (data.get('deductionReasons', null) == null || isValidStringList(data.deductionReasons, 60)) &&
+        (data.get('missingItems', null) == null || isValidStringList(data.missingItems, 60)) &&
+        (data.get('scholarshipReadiness', null) == null || (data.scholarshipReadiness is list && data.scholarshipReadiness.size() <= 40 && (data.scholarshipReadiness.size() == 0 || data.scholarshipReadiness[0] is map))) &&
+        (data.get('recommendedActions', null) == null || (data.recommendedActions is list && data.recommendedActions.size() <= 40 && (data.recommendedActions.size() == 0 || data.recommendedActions[0] is map))) &&
+        isValidOptionalString(data.get('aiActionPlan', null), 4000) &&
+        isValidString(data.createdAt, 10, 40) &&
+        isValidOptionalString(data.get('updatedAt', null), 40);
+    }
+
+    function isValidConversation(data, conversationId) {
+      return data.keys().hasAll(['id', 'userId', 'title', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'userId', 'title', 'createdAt', 'updatedAt']) &&
+        data.id == conversationId &&
+        data.userId == request.auth.uid &&
+        isValidString(data.title, 1, 200) &&
+        isValidString(data.createdAt, 10, 40) &&
+        isValidString(data.updatedAt, 10, 40);
+    }
+
+    function isValidMessage(data, messageId) {
+      return data.keys().hasAll(['id', 'conversationId', 'userId', 'role', 'content', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'conversationId', 'userId', 'role', 'content', 'createdAt']) &&
+        data.id == messageId &&
+        isValidId(data.conversationId) &&
+        data.userId == request.auth.uid &&
+        data.role in ['user', 'assistant'] &&
+        isValidString(data.content, 1, 10000) &&
+        isValidString(data.createdAt, 10, 40);
+    }
+
+    function isValidTrustGuardReport(data, reportId) {
+      return data.keys().hasAll(['id', 'userId', 'submittedUrlOrText', 'riskLevel', 'status', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'userId', 'reportCategory', 'submittedUrlOrText', 'claimsFeeOrDeposit', 'riskLevel', 'analysisSummary', 'status', 'adminNotes', 'createdAt', 'updatedAt']) &&
+        data.id == reportId &&
+        isValidString(data.userId, 1, 128) &&
+        (data.get('reportCategory', null) == null || data.reportCategory in ['scam_check', 'document_consistency']) &&
+        isValidString(data.submittedUrlOrText, 3, 1500) &&
+        (data.get('claimsFeeOrDeposit', null) == null || data.claimsFeeOrDeposit is bool) &&
+        data.riskLevel in ['Low Risk', 'Caution', 'High Risk', 'Unassessed'] &&
+        isValidOptionalString(data.get('analysisSummary', null), 3000) &&
+        data.status in ['Open', 'Under Review', 'Verified Safe', 'Confirmed Scam'] &&
+        isValidOptionalString(data.get('adminNotes', null), 1000) &&
+        isValidString(data.createdAt, 10, 40) &&
+        isValidString(data.updatedAt, 10, 40);
+    }
+
+    function isValidTrustGuardAssessment(data, assessmentId) {
+      return data.keys().hasAll([
+          'id', 'userId', 'analysisVersion', 'dataFingerprint', 'overallVerificationStatus',
+          'documentsTotalCount', 'documentsAnalyzedCount', 'severityCounts',
+          'documentResults', 'findings', 'correctiveActions',
+          'limitationNotice', 'disclaimer', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'userId', 'analysisVersion', 'dataFingerprint', 'overallVerificationStatus',
+          'documentsTotalCount', 'documentsAnalyzedCount', 'severityCounts',
+          'documentResults', 'findings', 'correctiveActions', 'changeSummary',
+          'aiSummary', 'limitationNotice', 'disclaimer', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == assessmentId &&
+        isValidString(data.userId, 1, 128) &&
+        isValidString(data.analysisVersion, 1, 60) &&
+        isValidString(data.dataFingerprint, 1, 60) &&
+        data.overallVerificationStatus in [
+          'Not Analyzed',
+          'Analysis In Progress',
+          'Consistency Check Completed',
+          'Manual Review Required',
+          'Information Mismatch Detected',
+          'Unable to Verify',
+          'Verified Against Available Records'
+        ] &&
+        data.documentsTotalCount is number && data.documentsTotalCount >= 0 && data.documentsTotalCount <= 500 &&
+        data.documentsAnalyzedCount is number && data.documentsAnalyzedCount >= 0 && data.documentsAnalyzedCount <= 500 &&
+        data.severityCounts is map &&
+        data.severityCounts.keys().hasAll(['critical', 'high', 'medium', 'low', 'informational']) &&
+        data.documentResults is list && data.documentResults.size() <= 40 &&
+        (data.documentResults.size() == 0 || data.documentResults[0] is map) &&
+        data.findings is list && data.findings.size() <= 50 &&
+        (data.findings.size() == 0 || data.findings[0] is map) &&
+        isValidStringList(data.correctiveActions, 20) &&
+        (data.get('changeSummary', null) == null || data.changeSummary is map) &&
+        isValidOptionalString(data.get('aiSummary', null), 5000) &&
+        isValidString(data.limitationNotice, 10, 800) &&
+        isValidString(data.disclaimer, 10, 600) &&
+        isValidString(data.createdAt, 10, 40) &&
+        isValidString(data.updatedAt, 10, 40);
+    }
+
+    function isValidNotification(data, notificationId) {
+      return data.keys().hasAll(['id', 'userId', 'title', 'message', 'isRead', 'createdAt']) &&
+        data.keys().hasOnly([
+          'id', 'userId', 'title', 'message', 'category', 'subCategory', 'priority',
+          'applicationId', 'scholarshipId', 'documentId', 'announcementId',
+          'officialSourceUrl', 'verifiedDeadline', 'actionRoute', 'dedupeKey',
+          'deliveryChannel', 'deliveryStatus', 'isRead', 'readAt', 'isArchived',
+          'archivedAt', 'createdAt'
+        ]) &&
+        data.id == notificationId &&
+        isValidString(data.userId, 1, 128) &&
+        isValidString(data.title, 1, 200) &&
+        isValidString(data.message, 1, 600) &&
+        (data.get('category', null) == null || data.category in [
+          'Scholarship', 'Application', 'Document', 'Readiness', 'Account',
+          'Deadline', 'Eligibility', 'TrustGuard', 'Checklist', 'System'
+        ]) &&
+        isValidOptionalString(data.get('subCategory', null), 80) &&
+        (data.get('priority', null) == null || data.priority in ['High', 'Medium', 'Low']) &&
+        isValidOptionalString(data.get('applicationId', null), 128) &&
+        isValidOptionalString(data.get('scholarshipId', null), 128) &&
+        isValidOptionalString(data.get('documentId', null), 128) &&
+        isValidOptionalString(data.get('announcementId', null), 128) &&
+        isValidOptionalString(data.get('officialSourceUrl', null), 500) &&
+        isValidOptionalString(data.get('verifiedDeadline', null), 40) &&
+        isValidOptionalString(data.get('actionRoute', null), 200) &&
+        isValidOptionalString(data.get('dedupeKey', null), 200) &&
+        (data.get('deliveryChannel', null) == null || data.deliveryChannel in ['in-app', 'email', 'in-app+email']) &&
+        (data.get('deliveryStatus', null) == null || data.deliveryStatus in [
+          'Delivered In-App', 'Email Pending', 'Email Sent', 'Email Delivered', 'Email Failed', 'Email Not Configured'
+        ]) &&
+        data.isRead is bool &&
+        isValidOptionalString(data.get('readAt', null), 40) &&
+        (data.get('isArchived', null) == null || data.isArchived is bool) &&
+        isValidOptionalString(data.get('archivedAt', null), 40) &&
+        isValidString(data.createdAt, 10, 40);
+    }
+
+    function isValidNotificationPreference(data, userId) {
+      return data.keys().hasAll([
+          'uid', 'deadlineRemindersEnabled', 'missingDocsAlertsEnabled',
+          'statusChangeAlertsEnabled', 'emailDigestRequested', 'emailDeliveryStatus', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'uid', 'scholarshipAlertsEnabled', 'applicationAlertsEnabled',
+          'documentAlertsEnabled', 'readinessAlertsEnabled', 'accountSecurityAlertsEnabled',
+          'deadlineRemindersEnabled', 'deadlineIntervalsDays', 'missingDocsAlertsEnabled',
+          'statusChangeAlertsEnabled', 'emailDigestRequested', 'emailNotificationsEnabled',
+          'emailDeliveryStatus', 'updatedAt'
+        ]) &&
+        data.uid == userId &&
+        (data.get('scholarshipAlertsEnabled', null) == null || data.scholarshipAlertsEnabled is bool) &&
+        (data.get('applicationAlertsEnabled', null) == null || data.applicationAlertsEnabled is bool) &&
+        (data.get('documentAlertsEnabled', null) == null || data.documentAlertsEnabled is bool) &&
+        (data.get('readinessAlertsEnabled', null) == null || data.readinessAlertsEnabled is bool) &&
+        (data.get('accountSecurityAlertsEnabled', null) == null || data.accountSecurityAlertsEnabled is bool) &&
+        data.deadlineRemindersEnabled is bool &&
+        (data.get('deadlineIntervalsDays', null) == null || (data.deadlineIntervalsDays is list && data.deadlineIntervalsDays.size() <= 6)) &&
+        data.missingDocsAlertsEnabled is bool &&
+        data.statusChangeAlertsEnabled is bool &&
+        data.emailDigestRequested is bool &&
+        (data.get('emailNotificationsEnabled', null) == null || data.emailNotificationsEnabled is bool) &&
+        isValidString(data.emailDeliveryStatus, 1, 120) &&
+        isValidString(data.updatedAt, 10, 40);
+    }
+
+    // 1. Student Profiles (PII-isolated)
+    match /profiles/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isVerified() && isValidId(userId) && isOwner(userId) && isValidProfile(incoming(), userId);
+      allow update: if isVerified() && isValidId(userId) && (isOwner(userId) || isAdmin()) &&
+        isValidProfile(incoming(), userId) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt;
+      allow delete: if isAdmin();
+    }
+
+    // 2. User Roles (Super Admin-controlled RBAC — prevents privilege escalation)
+    match /user_roles/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isSuperAdmin() && isValidId(userId) && isValidUserRole(incoming(), userId);
+      allow update: if isSuperAdmin() && isValidId(userId) && isValidUserRole(incoming(), userId) &&
+        incoming().uid == existing().uid && incoming().createdAt == existing().createdAt;
+      allow delete: if isSuperAdmin() && isValidId(userId);
+    }
+
+    // 3. Scholarships Catalogue (Publicly readable, Admin write-only)
+    match /scholarships/{scholarshipId} {
+      allow get: if isValidId(scholarshipId);
+      allow list: if true;
+      allow create: if isAdmin() && isValidId(scholarshipId) && isValidScholarship(incoming(), scholarshipId);
+      allow update: if isAdmin() && isValidId(scholarshipId) && isValidScholarship(incoming(), scholarshipId) &&
+        incoming().id == existing().id && incoming().createdAt == existing().createdAt;
+      allow delete: if isAdmin() && isValidId(scholarshipId);
+    }
+
+    // 4. Scholarship Eligibility Rules (Publicly readable, Admin write-only)
+    match /scholarship_eligibility_rules/{ruleId} {
+      allow get: if isValidId(ruleId);
+      allow list: if true;
+      allow create: if isAdmin() && isValidId(ruleId) && isValidEligibilityRule(incoming(), ruleId) &&
+        exists(/databases/$(database)/documents/scholarships/$(incoming().scholarshipId));
+      allow update: if isAdmin() && isValidId(ruleId) && isValidEligibilityRule(incoming(), ruleId);
+      allow delete: if isAdmin() && isValidId(ruleId);
+    }
+
+    // 5. Applications (Owner-isolated + Admin oversight + Foreign key check on scholarship)
+    match /applications/{applicationId} {
+      allow get: if isValidId(applicationId) && (isAdmin() || (isSignedIn() && existing().userId == request.auth.uid));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow create: if isVerified() && isValidId(applicationId) &&
+        isValidApplication(incoming(), applicationId) &&
+        exists(/databases/$(database)/documents/scholarships/$(incoming().scholarshipId));
+      allow update: if isVerified() && isValidId(applicationId) && (
+        isAdmin() ||
+        (existing().userId == request.auth.uid &&
+          isValidApplication(incoming(), applicationId) &&
+          incoming().userId == existing().userId &&
+          incoming().scholarshipId == existing().scholarshipId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'status', 'portalReferenceId', 'deadline', 'notes',
+            'submissionDate', 'submissionConfirmedByStudent', 'submissionConfirmedAt',
+            'portalOpenedAt', 'finalOutcome', 'correctionNotes', 'lastStatusChangedAt', 'updatedAt'
+          ]))
+      );
+      allow delete: if isVerified() && isValidId(applicationId) && (isAdmin() || existing().userId == request.auth.uid);
+    }
+
+    // 5b. Application Timeline Events (Owner-isolated, immutable audit history)
+    match /application_events/{eventId} {
+      allow get: if isValidId(eventId) && (isAdmin() || (isSignedIn() && existing().userId == request.auth.uid));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow create: if isVerified() && isValidId(eventId) &&
+        isValidApplicationEvent(incoming(), eventId) &&
+        get(/databases/$(database)/documents/applications/$(incoming().applicationId)).data.userId == request.auth.uid;
+      allow update: if false;
+      allow delete: if isVerified() && isValidId(eventId) && (isAdmin() || existing().userId == request.auth.uid);
+    }
+
+    // 5c. Application Checklist Items (Owner-isolated, relational check on parent application)
+    match /application_checklist_items/{itemId} {
+      allow get: if isValidId(itemId) && (isAdmin() || (isSignedIn() && existing().userId == request.auth.uid));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow create: if isVerified() && isValidId(itemId) &&
+        isValidApplicationChecklistItem(incoming(), itemId) &&
+        get(/databases/$(database)/documents/applications/$(incoming().applicationId)).data.userId == request.auth.uid;
+      allow update: if isVerified() && isValidId(itemId) && (
+        isAdmin() ||
+        (existing().userId == request.auth.uid &&
+          isValidApplicationChecklistItem(incoming(), itemId) &&
+          incoming().userId == existing().userId &&
+          incoming().applicationId == existing().applicationId &&
+          incoming().scholarshipId == existing().scholarshipId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'isCompleted', 'manualStatus', 'notes', 'linkedDocumentId', 'updatedAt'
+          ]))
+      );
+      allow delete: if isVerified() && isValidId(itemId) && (isAdmin() || existing().userId == request.auth.uid);
+    }
+
+    // 6. Saved Scholarships (Owner-isolated)
+    match /saved_scholarships/{savedId} {
+      allow get: if isValidId(savedId) && isSignedIn() && existing().userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isVerified() && isValidId(savedId) && isValidSavedScholarship(incoming(), savedId);
+      allow update: if false;
+      allow delete: if isVerified() && isValidId(savedId) && existing().userId == request.auth.uid;
+    }
+
+    // 7. Documents (Owner-isolated + Admin read)
+    match /documents/{documentId} {
+      allow get: if isValidId(documentId) && (isAdmin() || (isSignedIn() && existing().userId == request.auth.uid));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow create: if isVerified() && isValidId(documentId) && isValidDocument(incoming(), documentId);
+      allow update: if isVerified() && isValidId(documentId) &&
+        isValidDocument(incoming(), documentId) &&
+        incoming().userId == existing().userId &&
+        incoming().createdAt == existing().createdAt && (
+        isAdmin() ||
+        (existing().userId == request.auth.uid &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'documentType', 'fileName', 'mimeType', 'fileSizeBytes',
+            'storagePath', 'downloadUrl', 'storageProvider', 'verificationStatus',
+            'processingStatus', 'errorDetails', 'lastAnalyzedAt', 'pageCount',
+            'extractionMethod', 'updatedAt'
+          ]))
+      );
+      allow delete: if isVerified() && isValidId(documentId) && (isAdmin() || existing().userId == request.auth.uid);
+    }
+
+    // 8. Document Analysis (Owner-isolated + parent document ownership verified)
+    match /document_analysis/{analysisId} {
+      allow get: if isValidId(analysisId) && (isAdmin() || (isSignedIn() && existing().userId == request.auth.uid));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow create: if isVerified() && isValidId(analysisId) && isValidDocumentAnalysis(incoming(), analysisId) &&
+        exists(/databases/$(database)/documents/documents/$(incoming().documentId)) &&
+        (isAdmin() || (
+          incoming().userId == request.auth.uid &&
+          get(/databases/$(database)/documents/documents/$(incoming().documentId)).data.userId == request.auth.uid
+        ));
+      allow update: if false;
+      allow delete: if isVerified() && isValidId(analysisId) && (isAdmin() || existing().userId == request.auth.uid);
+    }
+
+    // 9. Eligibility Assessments & Details (Owner-isolated)
+    match /eligibility_assessments/{assessmentId} {
+      allow get: if isValidId(assessmentId) && (isAdmin() || (isSignedIn() && existing().userId == request.auth.uid));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow create: if isVerified() && isValidId(assessmentId) && isValidEligibilityAssessment(incoming(), assessmentId);
+      allow update: if false;
+      allow delete: if isVerified() && isValidId(assessmentId) && (isAdmin() || existing().userId == request.auth.uid);
+    }
+
+    match /eligibility_assessment_details/{detailId} {
+      allow get: if isValidId(detailId) && (isAdmin() || (isSignedIn() && existing().userId == request.auth.uid));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow create: if isVerified() && isValidId(detailId) &&
+        isValidEligibilityAssessmentDetail(incoming(), detailId) &&
+        get(/databases/$(database)/documents/eligibility_assessments/$(incoming().assessmentId)).data.userId == request.auth.uid;
+      allow update: if false;
+      allow delete: if isVerified() && isValidId(detailId) && (isAdmin() || existing().userId == request.auth.uid);
+    }
+
+    // 10. Readiness Assessments (Owner-isolated)
+    match /readiness_assessments/{assessmentId} {
+      allow get: if isValidId(assessmentId) && isSignedIn() && existing().userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isVerified() && isValidId(assessmentId) && isValidReadinessAssessment(incoming(), assessmentId);
+      allow update: if isVerified() && isValidId(assessmentId) && existing().userId == request.auth.uid &&
+        isValidReadinessAssessment(incoming(), assessmentId) &&
+        incoming().userId == existing().userId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().readinessPercent == existing().readinessPercent &&
+        incoming().get('overallScore', null) == existing().get('overallScore', null) &&
+        incoming().get('assessmentStatus', null) == existing().get('assessmentStatus', null) &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['recommendedActions', 'aiActionPlan', 'updatedAt']);
+      allow delete: if isVerified() && isValidId(assessmentId) && existing().userId == request.auth.uid;
+    }
+
+    // 11. AI Conversations (Owner-isolated)
+    match /ai_conversations/{conversationId} {
+      allow get: if isValidId(conversationId) && isSignedIn() && existing().userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isVerified() && isValidId(conversationId) && isValidConversation(incoming(), conversationId);
+      allow update: if isVerified() && isValidId(conversationId) && existing().userId == request.auth.uid &&
+        isValidConversation(incoming(), conversationId) &&
+        incoming().userId == existing().userId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['title', 'updatedAt']);
+      allow delete: if isVerified() && isValidId(conversationId) && existing().userId == request.auth.uid;
+    }
+
+    // 12. AI Messages (Owner-isolated, relational check on parent conversation)
+    match /ai_messages/{messageId} {
+      allow get: if isValidId(messageId) && isSignedIn() && existing().userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isVerified() && isValidId(messageId) && isValidMessage(incoming(), messageId) &&
+        get(/databases/$(database)/documents/ai_conversations/$(incoming().conversationId)).data.userId == request.auth.uid;
+      allow update: if false;
+      allow delete: if isVerified() && isValidId(messageId) && existing().userId == request.auth.uid;
+    }
+
+    // 13. TrustGuard Reports (Owner read/create, Admin moderation with terminal locking)
+    match /trustguard_reports/{reportId} {
+      allow get: if isValidId(reportId) && (isAdmin() || (isSignedIn() && existing().userId == request.auth.uid));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow create: if isVerified() && isValidId(reportId) && isValidTrustGuardReport(incoming(), reportId) &&
+        incoming().userId == request.auth.uid &&
+        incoming().status in ['Open', 'Under Review'];
+      allow update: if isAdmin() && isValidId(reportId) && isValidTrustGuardReport(incoming(), reportId) &&
+        incoming().userId == existing().userId &&
+        incoming().createdAt == existing().createdAt &&
+        existing().status != 'Confirmed Scam';
+      allow delete: if isAdmin() && isValidId(reportId);
+    }
+
+    // 13b. TrustGuard Document Verification Assessments (Owner-isolated audit snapshots; review notes only on update)
+    match /trustguard_assessments/{assessmentId} {
+      allow get: if isValidId(assessmentId) && (isAdmin() || (isSignedIn() && existing().userId == request.auth.uid));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow create: if isVerified() && isValidId(assessmentId) &&
+        isValidTrustGuardAssessment(incoming(), assessmentId) &&
+        incoming().userId == request.auth.uid;
+      allow update: if isVerified() && isValidId(assessmentId) &&
+        existing().userId == request.auth.uid &&
+        isValidTrustGuardAssessment(incoming(), assessmentId) &&
+        incoming().userId == existing().userId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().dataFingerprint == existing().dataFingerprint &&
+        incoming().analysisVersion == existing().analysisVersion &&
+        incoming().overallVerificationStatus == existing().overallVerificationStatus &&
+        incoming().severityCounts == existing().severityCounts &&
+        incoming().documentResults == existing().documentResults &&
+        incoming().findings.size() == existing().findings.size() &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['findings', 'updatedAt']);
+      allow delete: if isVerified() && isValidId(assessmentId) && (isAdmin() || existing().userId == request.auth.uid);
+    }
+
+    // 14. Notifications (Owner read/mark read/archive/delete, Admin or owner in-app create)
+    match /notifications/{notificationId} {
+      allow get: if isValidId(notificationId) && (isAdmin() || (isSignedIn() && existing().userId == request.auth.uid));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow create: if isVerified() && isValidId(notificationId) && isValidNotification(incoming(), notificationId) &&
+        (isAdmin() || incoming().userId == request.auth.uid);
+      allow update: if isVerified() && isValidId(notificationId) && (
+        isAdmin() ||
+        (existing().userId == request.auth.uid &&
+          isValidNotification(incoming(), notificationId) &&
+          incoming().userId == existing().userId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['isRead', 'readAt', 'isArchived', 'archivedAt']))
+      );
+      allow delete: if isVerified() && isValidId(notificationId) && (isAdmin() || existing().userId == request.auth.uid);
+    }
+
+    // 15. Notification Preferences (Owner-isolated)
+    match /notification_preferences/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isVerified() && isValidId(userId) && isOwner(userId) && isValidNotificationPreference(incoming(), userId);
+      allow update: if isVerified() && isValidId(userId) && (isOwner(userId) || isAdmin()) &&
+        isValidNotificationPreference(incoming(), userId) &&
+        incoming().uid == existing().uid;
+      allow delete: if isAdmin() || (isVerified() && isValidId(userId) && isOwner(userId));
+    }
+
+    // 15b. Notification Delivery Logs (Owner-isolated audit trail, immutable after creation except server/admin status retry updates)
+    function isValidNotificationDeliveryLog(data, logId) {
+      return data.keys().hasAll([
+          'id', 'userId', 'channel', 'provider', 'idempotencyKey',
+          'status', 'attempts', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'userId', 'notificationId', 'recipientEmail', 'channel',
+          'provider', 'idempotencyKey', 'status', 'attempts', 'httpStatus',
+          'providerMessageId', 'errorMessage', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == logId &&
+        isValidString(data.userId, 1, 128) &&
+        isValidOptionalString(data.get('notificationId', null), 128) &&
+        isValidOptionalString(data.get('recipientEmail', null), 200) &&
+        data.channel in ['email', 'in-app'] &&
+        isValidString(data.provider, 1, 60) &&
+        isValidString(data.idempotencyKey, 1, 200) &&
+        data.status in ['Pending', 'Sent', 'Delivered', 'Failed', 'Not Configured'] &&
+        data.attempts is number && data.attempts >= 0 && data.attempts <= 20 &&
+        (data.get('httpStatus', null) == null || data.httpStatus is number) &&
+        isValidOptionalString(data.get('providerMessageId', null), 200) &&
+        isValidOptionalString(data.get('errorMessage', null), 600) &&
+        isValidString(data.createdAt, 10, 40) &&
+        isValidString(data.updatedAt, 10, 40);
+    }
+
+    match /notification_delivery_logs/{logId} {
+      allow get: if isValidId(logId) && (isAdmin() || (isSignedIn() && existing().userId == request.auth.uid));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow create: if isVerified() && isValidId(logId) &&
+        isValidNotificationDeliveryLog(incoming(), logId) &&
+        (isAdmin() || incoming().userId == request.auth.uid);
+      allow update: if isAdmin() && isValidId(logId) &&
+        isValidNotificationDeliveryLog(incoming(), logId) &&
+        incoming().userId == existing().userId &&
+        incoming().createdAt == existing().createdAt;
+      allow delete: if false;
+    }
+
+    // 15c. Admin Announcements (Admin write-only, verified students can read Published announcements)
+    function isValidAnnouncement(data, announcementId) {
+      return data.keys().hasAll([
+          'id', 'title', 'message', 'category', 'targetAudience',
+          'status', 'createdByUid', 'createdByEmail', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'title', 'message', 'category', 'targetAudience',
+          'targetStates', 'targetEducationLevels', 'status', 'publishAt',
+          'expiresAt', 'actionRoute', 'deliveredCount', 'createdByUid',
+          'createdByEmail', 'publishedByUid', 'publishedAt', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == announcementId &&
+        isValidString(data.title, 2, 200) &&
+        isValidString(data.message, 2, 1200) &&
+        data.category in ['Scholarship', 'Account', 'System', 'Deadline', 'Maintenance'] &&
+        data.targetAudience in ['all', 'onboarded', 'pending_onboarding', 'filtered'] &&
+        (data.get('targetStates', null) == null || isValidStringList(data.targetStates, 40)) &&
+        (data.get('targetEducationLevels', null) == null || isValidStringList(data.targetEducationLevels, 20)) &&
+        data.status in ['Draft', 'Scheduled', 'Published', 'Expired', 'Unpublished'] &&
+        isValidOptionalString(data.get('publishAt', null), 40) &&
+        isValidOptionalString(data.get('expiresAt', null), 40) &&
+        isValidOptionalString(data.get('actionRoute', null), 200) &&
+        (data.get('deliveredCount', null) == null || (data.deliveredCount is number && data.deliveredCount >= 0)) &&
+        isValidString(data.createdByUid, 1, 128) &&
+        isValidString(data.createdByEmail, 3, 200) &&
+        isValidOptionalString(data.get('publishedByUid', null), 128) &&
+        isValidOptionalString(data.get('publishedAt', null), 40) &&
+        isValidString(data.createdAt, 10, 40) &&
+        isValidString(data.updatedAt, 10, 40);
+    }
+
+    match /announcements/{announcementId} {
+      allow get: if isValidId(announcementId) && (isAdmin() || (isVerified() && existing().status == 'Published'));
+      allow list: if isAdmin() || (isVerified() && resource.data.status == 'Published');
+      allow create: if isAdmin() && isValidId(announcementId) && isValidAnnouncement(incoming(), announcementId);
+      allow update: if isAdmin() && isValidId(announcementId) && isValidAnnouncement(incoming(), announcementId) &&
+        incoming().id == existing().id && incoming().createdAt == existing().createdAt;
+      allow delete: if isAdmin() && isValidId(announcementId);
+    }
+
+    // 15d. Scheduled Notification Runs (Admin-only observability log)
+    function isValidNotificationRun(data, runId) {
+      return data.keys().hasAll([
+          'id', 'triggerType', 'status', 'startedAt', 'completedAt',
+          'scholarshipsEvaluated', 'applicationsEvaluated', 'studentsEvaluated',
+          'alertsGenerated', 'emailsAttempted', 'emailsSent', 'emailsFailed'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'triggerType', 'status', 'startedAt', 'completedAt',
+          'scholarshipsEvaluated', 'applicationsEvaluated', 'studentsEvaluated',
+          'alertsGenerated', 'emailsAttempted', 'emailsSent', 'emailsFailed',
+          'errorSummary', 'triggeredByUid'
+        ]) &&
+        data.id == runId &&
+        data.triggerType in ['startup', 'cron_interval', 'admin_manual', 'user_sync'] &&
+        data.status in ['Completed', 'Partial', 'Failed', 'Skipped (No Server Credentials)'] &&
+        isValidString(data.startedAt, 10, 40) &&
+        isValidString(data.completedAt, 10, 40) &&
+        data.scholarshipsEvaluated is number && data.scholarshipsEvaluated >= 0 &&
+        data.applicationsEvaluated is number && data.applicationsEvaluated >= 0 &&
+        data.studentsEvaluated is number && data.studentsEvaluated >= 0 &&
+        data.alertsGenerated is number && data.alertsGenerated >= 0 &&
+        data.emailsAttempted is number && data.emailsAttempted >= 0 &&
+        data.emailsSent is number && data.emailsSent >= 0 &&
+        data.emailsFailed is number && data.emailsFailed >= 0 &&
+        isValidOptionalString(data.get('errorSummary', null), 600) &&
+        isValidOptionalString(data.get('triggeredByUid', null), 128);
+    }
+
+    match /notification_runs/{runId} {
+      allow get: if isValidId(runId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isAdmin() && isValidId(runId) && isValidNotificationRun(incoming(), runId);
+      allow update: if isAdmin() && isValidId(runId) && isValidNotificationRun(incoming(), runId);
+      allow delete: if false;
+    }
+
+    // 16. Phase 9 Admin Audit Logs (Strictly Immutable, Admin Read/Create Only)
+    function isValidAdminAuditLog(data, logId) {
+      return data.keys().hasAll(['id', 'adminUid', 'adminEmail', 'adminRole', 'action', 'entityType', 'entityId', 'summary', 'createdAt']) &&
+        data.keys().hasOnly([
+          'id', 'adminUid', 'adminEmail', 'adminRole', 'action',
+          'entityType', 'entityId', 'summary', 'changesSummary', 'requestId', 'createdAt'
+        ]) &&
+        data.id == logId &&
+        data.adminUid == request.auth.uid &&
+        isValidString(data.adminEmail, 3, 200) &&
+        data.adminRole in ['admin', 'super_admin'] &&
+        isValidString(data.action, 2, 80) &&
+        isValidString(data.entityType, 2, 60) &&
+        isValidString(data.entityId, 1, 128) &&
+        isValidString(data.summary, 2, 600) &&
+        isValidOptionalString(data.get('changesSummary', null), 1200) &&
+        isValidOptionalString(data.get('requestId', null), 128) &&
+        isValidString(data.createdAt, 10, 40);
+    }
+
+    match /admin_audit_logs/{logId} {
+      allow get: if isValidId(logId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isAdmin() && isValidId(logId) && isValidAdminAuditLog(incoming(), logId);
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // 17. Phase 9 Scholarship Verification History (Immutable Evidence Trail)
+    function isValidVerificationHistory(data, historyId) {
+      return data.keys().hasAll([
+          'id', 'scholarshipId', 'scholarshipTitle', 'previousStatus', 'newStatus',
+          'officialSourceUrl', 'sourceEvidence', 'adminUid', 'adminEmail', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'scholarshipId', 'scholarshipTitle', 'previousStatus', 'newStatus',
+          'sourceName', 'officialSourceUrl', 'sourceEvidence', 'verificationNotes',
+          'httpCheckStatus', 'adminUid', 'adminEmail', 'createdAt'
+        ]) &&
+        data.id == historyId &&
+        isValidId(data.scholarshipId) &&
+        isValidString(data.scholarshipTitle, 2, 240) &&
+        isValidString(data.previousStatus, 2, 60) &&
+        isValidString(data.newStatus, 2, 60) &&
+        isValidOptionalString(data.get('sourceName', null), 200) &&
+        isValidString(data.officialSourceUrl, 8, 500) &&
+        isValidString(data.sourceEvidence, 2, 1500) &&
+        isValidOptionalString(data.get('verificationNotes', null), 1000) &&
+        (data.get('httpCheckStatus', null) == null || data.httpCheckStatus is number) &&
+        data.adminUid == request.auth.uid &&
+        isValidString(data.adminEmail, 3, 200) &&
+        isValidString(data.createdAt, 10, 40);
+    }
+
+    match /scholarship_verification_history/{historyId} {
+      allow get: if isValidId(historyId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isAdmin() && isValidId(historyId) && isValidVerificationHistory(incoming(), historyId) &&
+        exists(/databases/$(database)/documents/scholarships/$(incoming().scholarshipId));
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // 18. Phase 9 Scholarship Rule Versions (Immutable Version History)
+    function isValidRuleVersion(data, versionId) {
+      return data.keys().hasAll([
+          'id', 'scholarshipId', 'versionNumber', 'changeSummary',
+          'rulesSnapshot', 'changedByUid', 'changedByEmail', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'scholarshipId', 'versionNumber', 'changeSummary',
+          'rulesSnapshot', 'changedByUid', 'changedByEmail', 'createdAt'
+        ]) &&
+        data.id == versionId &&
+        isValidId(data.scholarshipId) &&
+        data.versionNumber is number && data.versionNumber >= 1 &&
+        isValidString(data.changeSummary, 2, 500) &&
+        data.rulesSnapshot is list && data.rulesSnapshot.size() <= 40 &&
+        data.changedByUid == request.auth.uid &&
+        isValidString(data.changedByEmail, 3, 200) &&
+        isValidString(data.createdAt, 10, 40);
+    }
+
+    match /scholarship_rule_versions/{versionId} {
+      allow get: if isValidId(versionId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isAdmin() && isValidId(versionId) && isValidRuleVersion(incoming(), versionId) &&
+        exists(/databases/$(database)/documents/scholarships/$(incoming().scholarshipId));
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // 19. Phase 9 Data Quality Issues (Admin Governance Queue)
+    function isValidDataQualityIssue(data, issueId) {
+      return data.keys().hasAll([
+          'id', 'scholarshipId', 'scholarshipTitle', 'issueType', 'severity',
+          'description', 'recommendedCorrection', 'resolutionStatus', 'detectedAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'scholarshipId', 'scholarshipTitle', 'relatedScholarshipId',
+          'relatedScholarshipTitle', 'issueType', 'severity', 'description',
+          'recommendedCorrection', 'resolutionStatus', 'detectedAt',
+          'resolvedAt', 'resolvedByUid', 'resolutionNote', 'updatedAt'
+        ]) &&
+        data.id == issueId &&
+        isValidId(data.scholarshipId) &&
+        isValidString(data.scholarshipTitle, 2, 240) &&
+        isValidOptionalString(data.get('relatedScholarshipId', null), 128) &&
+        isValidOptionalString(data.get('relatedScholarshipTitle', null), 240) &&
+        isValidString(data.issueType, 2, 80) &&
+        data.severity in ['Critical', 'High', 'Medium', 'Low'] &&
+        isValidString(data.description, 2, 800) &&
+        isValidString(data.recommendedCorrection, 2, 800) &&
+        data.resolutionStatus in ['Open', 'Acknowledged', 'Resolved', 'Ignored'] &&
+        isValidString(data.detectedAt, 10, 40) &&
+        isValidOptionalString(data.get('resolvedAt', null), 40) &&
+        isValidOptionalString(data.get('resolvedByUid', null), 128) &&
+        isValidOptionalString(data.get('resolutionNote', null), 600) &&
+        isValidString(data.updatedAt, 10, 40);
+    }
+
+    match /data_quality_issues/{issueId} {
+      allow get: if isValidId(issueId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isAdmin() && isValidId(issueId) && isValidDataQualityIssue(incoming(), issueId);
+      allow update: if isAdmin() && isValidId(issueId) && isValidDataQualityIssue(incoming(), issueId) &&
+        incoming().id == existing().id && incoming().detectedAt == existing().detectedAt;
+      allow delete: if isSuperAdmin() && isValidId(issueId);
+    }
+  }
+}

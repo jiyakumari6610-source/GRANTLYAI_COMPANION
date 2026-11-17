@@ -1,0 +1,808 @@
+{
+  "entities": {
+    "Profile": {
+      "title": "Student Profile",
+      "description": "Structured Indian student academic, personal, and socio-economic profile.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "fullName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "email": { "type": "string", "format": "email", "maxLength": 200 },
+        "phone": { "type": "string", "maxLength": 20 },
+        "state": { "type": "string", "maxLength": 80 },
+        "district": { "type": "string", "maxLength": 80 },
+        "dateOfBirth": { "type": "string", "maxLength": 20 },
+        "gender": { "type": "string", "enum": ["Female", "Male", "Non-Binary", "Prefer not to say"] },
+        "category": { "type": "string", "enum": ["General", "OBC-NCL", "SC", "ST", "EWS", "Minority"] },
+        "disabilityStatus": { "type": "string", "enum": ["None", "PwD (40% or above)", "PwD (Below 40%)"] },
+        "disabilityDetails": { "type": "string", "maxLength": 240 },
+        "educationLevel": { "type": "string", "enum": ["Class 11-12", "Diploma / Polytechnic", "Undergraduate (UG)", "Postgraduate (PG)", "PhD / Doctoral"] },
+        "courseSpecialization": { "type": "string", "maxLength": 160 },
+        "institutionName": { "type": "string", "maxLength": 200 },
+        "collegeLocation": { "type": "string", "maxLength": 160 },
+        "academicYear": { "type": "string", "maxLength": 30 },
+        "currentSemesterOrYear": { "type": "string", "maxLength": 40 },
+        "previousMarksPercent": { "type": "number" },
+        "familyAnnualIncomeInr": { "type": "number" },
+        "parentOccupation": { "type": "string", "maxLength": 160 },
+        "hostelStatus": { "type": "string", "enum": ["Hosteller", "Day Scholar"] },
+        "certificates": { "type": "array", "maxLength": 20 },
+        "onboardingCompleted": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "fullName", "email", "onboardingCompleted", "createdAt", "updatedAt"]
+    },
+    "UserRole": {
+      "title": "User Role",
+      "description": "Server and Super Admin-managed role-based access control entry.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "role": { "type": "string", "enum": ["student", "admin", "super_admin", "reviewer"] },
+        "email": { "type": "string", "maxLength": 200 },
+        "displayName": { "type": "string", "maxLength": 160 },
+        "status": { "type": "string", "enum": ["active", "disabled"] },
+        "assignedBy": { "type": "string", "maxLength": 128 },
+        "assignedByEmail": { "type": "string", "maxLength": 200 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "role", "createdAt", "updatedAt"]
+    },
+    "Scholarship": {
+      "title": "Scholarship",
+      "description": "Verified Indian scholarship program with source attribution, provenance, cycle status, and eligibility metadata.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "title": { "type": "string", "minLength": 2, "maxLength": 240 },
+        "provider": { "type": "string", "minLength": 2, "maxLength": 200 },
+        "scholarshipType": {
+          "type": "string",
+          "enum": [
+            "Central Government",
+            "State Government",
+            "Private",
+            "Corporate",
+            "University",
+            "Merit-Based",
+            "Need-Based",
+            "Category-Based",
+            "Private Foundation"
+          ]
+        },
+        "description": { "type": "string", "maxLength": 2000 },
+        "benefitsSummary": { "type": "string", "maxLength": 800 },
+        "financialBenefitsText": { "type": "string", "maxLength": 800 },
+        "annualAwardInr": { "type": "number" },
+        "eligibilitySummary": { "type": "string", "maxLength": 1500 },
+        "academicRequirements": { "type": "string", "maxLength": 600 },
+        "minIncomeLimitInr": { "type": "number" },
+        "incomeLimitInr": { "type": "number" },
+        "educationLevels": { "type": "array" },
+        "eligibleCourses": { "type": "array" },
+        "allowedCategories": { "type": "array" },
+        "eligibleStates": { "type": "array" },
+        "minMarksPercent": { "type": "number" },
+        "genderRestriction": { "type": "string", "enum": ["All", "Female", "Male"] },
+        "disabilityRequired": { "type": "boolean" },
+        "requiredDocuments": { "type": "array" },
+        "applicationStartDate": { "type": "string", "maxLength": 60 },
+        "applicationDeadline": { "type": "string", "maxLength": 60 },
+        "applicationProcess": { "type": "string", "maxLength": 1500 },
+        "applicationStatus": {
+          "type": "string",
+          "enum": ["Currently accepting applications", "Upcoming", "Closed", "Expired", "Status unknown"]
+        },
+        "deadlineStatus": { "type": "string", "maxLength": 60 },
+        "officialUrl": { "type": "string", "maxLength": 500 },
+        "officialSourceUrl": { "type": "string", "maxLength": 500 },
+        "verificationStatus": {
+          "type": "string",
+          "enum": [
+            "Unverified",
+            "Pending Review",
+            "Verified",
+            "Needs Correction",
+            "Expired",
+            "Archived",
+            "Pending verification",
+            "Needs verification",
+            "Verified Official Source"
+          ]
+        },
+        "lastVerifiedDate": { "type": "string", "maxLength": 40 },
+        "sourceNotes": { "type": "string", "maxLength": 600 },
+        "sourceName": { "type": "string", "maxLength": 200 },
+        "retrievedAt": { "type": "string", "maxLength": 40 },
+        "verifiedByUid": { "type": "string", "maxLength": 128 },
+        "verifiedByEmail": { "type": "string", "maxLength": 200 },
+        "verificationNotes": { "type": "string", "maxLength": 1000 },
+        "sourceEvidence": { "type": "string", "maxLength": 1500 },
+        "isActive": { "type": "boolean" },
+        "archivedAt": { "type": "string", "maxLength": 40 },
+        "archivedByUid": { "type": "string", "maxLength": 128 },
+        "activeRuleVersion": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "title", "provider", "scholarshipType", "officialUrl", "verificationStatus", "createdAt", "updatedAt"]
+    },
+    "ScholarshipEligibilityRule": {
+      "title": "Scholarship Eligibility Rule",
+      "description": "Granular structured eligibility rule linked to a scholarship.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "scholarshipId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "ruleKey": { "type": "string", "maxLength": 80 },
+        "ruleLabel": { "type": "string", "maxLength": 200 },
+        "operator": { "type": "string", "enum": ["lte", "gte", "in", "eq", "neq", "contains"] },
+        "ruleValue": { "type": "string", "maxLength": 300 },
+        "isMandatory": { "type": "boolean" },
+        "isActive": { "type": "boolean" },
+        "versionNumber": { "type": "number" },
+        "description": { "type": "string", "maxLength": 500 },
+        "updatedByUid": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "scholarshipId", "ruleKey", "ruleLabel", "operator", "ruleValue", "isMandatory", "createdAt"]
+    },
+    "Application": {
+      "title": "Scholarship Application",
+      "description": "Student-tracked scholarship application lifecycle record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "scholarshipId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "scholarshipTitle": { "type": "string", "maxLength": 240 },
+        "provider": { "type": "string", "maxLength": 200 },
+        "status": {
+          "type": "string",
+          "enum": [
+            "Interested",
+            "Preparing",
+            "Documents Pending",
+            "Ready to Apply",
+            "Submitted",
+            "Under Review",
+            "Correction Required",
+            "Approved",
+            "Rejected",
+            "Withdrawn",
+            "Closed",
+            "Draft",
+            "Documents Ready",
+            "Awarded"
+          ]
+        },
+        "portalReferenceId": { "type": "string", "maxLength": 120 },
+        "deadline": { "type": "string", "maxLength": 60 },
+        "notes": { "type": "string", "maxLength": 2000 },
+        "submissionDate": { "type": "string", "maxLength": 40 },
+        "submissionConfirmedByStudent": { "type": "boolean" },
+        "submissionConfirmedAt": { "type": "string", "format": "date-time" },
+        "portalOpenedAt": { "type": "string", "format": "date-time" },
+        "finalOutcome": { "type": "string", "maxLength": 300 },
+        "correctionNotes": { "type": "string", "maxLength": 1000 },
+        "lastStatusChangedAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "scholarshipId", "scholarshipTitle", "status", "createdAt", "updatedAt"]
+    },
+    "ApplicationEvent": {
+      "title": "Application Timeline Event",
+      "description": "Chronological audit event for a tracked scholarship application.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "applicationId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "scholarshipId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "eventType": {
+          "type": "string",
+          "enum": [
+            "Application Added",
+            "Preparation Started",
+            "Document Linked",
+            "Checklist Updated",
+            "Marked Ready",
+            "External Portal Opened",
+            "Submission Confirmed",
+            "Status Changed",
+            "Correction Requested",
+            "Final Outcome Recorded",
+            "Notes Updated"
+          ]
+        },
+        "fromStatus": { "type": "string", "maxLength": 60 },
+        "toStatus": { "type": "string", "maxLength": 60 },
+        "description": { "type": "string", "maxLength": 600 },
+        "source": { "type": "string", "enum": ["student", "system", "admin"] },
+        "actorUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "applicationId", "userId", "scholarshipId", "eventType", "description", "source", "actorUid", "createdAt"]
+    },
+    "ApplicationChecklistItem": {
+      "title": "Application Checklist Item",
+      "description": "Scholarship-specific requirement checklist status tracked per student application.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "applicationId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "scholarshipId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "requirementName": { "type": "string", "maxLength": 200 },
+        "isCompleted": { "type": "boolean" },
+        "manualStatus": { "type": "string", "enum": ["Pending", "Completed", "Needs Attention"] },
+        "notes": { "type": "string", "maxLength": 500 },
+        "linkedDocumentId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "applicationId", "userId", "scholarshipId", "requirementName", "isCompleted", "manualStatus", "createdAt", "updatedAt"]
+    },
+    "SavedScholarship": {
+      "title": "Saved Scholarship",
+      "description": "Bookmarked scholarship saved by a student.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "scholarshipId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "scholarshipId", "createdAt"]
+    },
+    "DocumentRecord": {
+      "title": "Student Document",
+      "description": "Uploaded student document metadata linked to private vault or Firebase Storage.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "documentType": { "type": "string", "maxLength": 100 },
+        "fileName": { "type": "string", "maxLength": 240 },
+        "mimeType": { "type": "string", "maxLength": 120 },
+        "fileSizeBytes": { "type": "number" },
+        "storagePath": { "type": "string", "maxLength": 500 },
+        "downloadUrl": { "type": "string", "maxLength": 1000 },
+        "storageProvider": { "type": "string", "enum": ["private-vault", "firebase-storage"] },
+        "verificationStatus": { "type": "string", "enum": ["Uploaded", "Analyzed", "Needs Attention", "Verified"] },
+        "processingStatus": { "type": "string", "enum": ["Pending", "Processing", "Completed", "Failed", "Needs Review"] },
+        "errorDetails": { "type": "string", "maxLength": 800 },
+        "lastAnalyzedAt": { "type": "string", "format": "date-time" },
+        "pageCount": { "type": "number" },
+        "extractionMethod": { "type": "string", "maxLength": 80 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "documentType", "fileName", "storagePath", "verificationStatus", "createdAt", "updatedAt"]
+    },
+    "DocumentAnalysis": {
+      "title": "Document Analysis",
+      "description": "Gemini AI multimodal + OCR structured extraction and scholarship comparison analysis.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "documentId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "detectedType": { "type": "string", "maxLength": 120 },
+        "readabilityStatus": { "type": "string", "enum": ["Readable", "Partially Readable", "Unreadable"] },
+        "extractionMethod": { "type": "string", "maxLength": 80 },
+        "pageCount": { "type": "number" },
+        "rawTextPreview": { "type": "string", "maxLength": 2500 },
+        "issuingAuthority": { "type": "string", "maxLength": 200 },
+        "validityNotes": { "type": "string", "maxLength": 500 },
+        "expiryWarning": { "type": "string", "maxLength": 400 },
+        "overallConfidence": { "type": "string", "enum": ["High", "Medium", "Low"] },
+        "extractedFields": { "type": "array" },
+        "marksheetSummary": { "type": "object" },
+        "missingFields": { "type": "array" },
+        "unreadableFields": { "type": "array" },
+        "profileMismatches": { "type": "array" },
+        "manualVerificationItems": { "type": "array" },
+        "issuesFound": { "type": "array" },
+        "recommendations": { "type": "array" },
+        "readinessVerdict": { "type": "string", "enum": ["Ready", "Needs Clarification", "Incomplete"] },
+        "disclaimer": { "type": "string", "maxLength": 400 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "documentId", "detectedType", "readinessVerdict", "createdAt"]
+    },
+    "EligibilityAssessment": {
+      "title": "Eligibility Assessment",
+      "description": "Explainable eligibility evaluation for a student-scholarship pair.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "scholarshipId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "scholarshipTitle": { "type": "string", "maxLength": 240 },
+        "overallStatus": {
+          "type": "string",
+          "enum": [
+            "Eligible",
+            "Potentially Eligible",
+            "Not Eligible",
+            "Insufficient Information",
+            "Scholarship Status Unverified",
+            "Partially Eligible"
+          ]
+        },
+        "compatibilityScore": { "type": "number" },
+        "passedCriteria": { "type": "array" },
+        "failedCriteria": { "type": "array" },
+        "unknownCriteria": { "type": "array" },
+        "notApplicableCriteria": { "type": "array" },
+        "scoreFormulaSummary": { "type": "string", "maxLength": 500 },
+        "criteriaBreakdown": { "type": "array" },
+        "aiExplanation": { "type": "string", "maxLength": 4000 },
+        "ruleVersionUsed": { "type": "number" },
+        "rulesAppliedCount": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "scholarshipId", "overallStatus", "createdAt"]
+    },
+    "EligibilityAssessmentDetail": {
+      "title": "Eligibility Assessment Detail",
+      "description": "Criterion-by-criterion deterministic audit row linked to an eligibility assessment.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "assessmentId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "scholarshipId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "criterion": { "type": "string", "maxLength": 160 },
+        "status": { "type": "string", "enum": ["Passed", "Failed", "Unknown", "Not Applicable"] },
+        "detail": { "type": "string", "maxLength": 800 },
+        "missingFieldKey": { "type": "string", "maxLength": 80 },
+        "missingFieldReason": { "type": "string", "maxLength": 400 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "assessmentId", "userId", "scholarshipId", "criterion", "status", "detail", "createdAt"]
+    },
+    "ReadinessAssessment": {
+      "title": "Readiness Assessment",
+      "description": "Student scholarship application readiness evaluation with 5 weighted dimensions, per-scholarship readiness, and prioritized action plan.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "readinessPercent": { "type": "number" },
+        "overallScore": { "type": "number" },
+        "assessmentStatus": {
+          "type": "string",
+          "enum": ["Ready", "Partially Ready", "Needs Preparation", "Assessment Incomplete", "No Scholarship Data"]
+        },
+        "algorithmVersion": { "type": "string", "maxLength": 60 },
+        "dataFingerprint": { "type": "string", "maxLength": 60 },
+        "dataAvailabilityWarning": { "type": "string", "maxLength": 600 },
+        "disclaimer": { "type": "string", "maxLength": 500 },
+        "profileCompletenessPercent": { "type": "number" },
+        "documentCoveragePercent": { "type": "number" },
+        "dimensionScores": { "type": "array" },
+        "completedRequirements": { "type": "array" },
+        "incompleteRequirements": { "type": "array" },
+        "deductionReasons": { "type": "array" },
+        "missingItems": { "type": "array" },
+        "scholarshipReadiness": { "type": "array" },
+        "recommendedActions": { "type": "array" },
+        "aiActionPlan": { "type": "string", "maxLength": 4000 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "readinessPercent", "createdAt"]
+    },
+    "AIConversation": {
+      "title": "AI Companion Conversation",
+      "description": "Student AI Companion conversation thread metadata.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 200 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "title", "createdAt", "updatedAt"]
+    },
+    "AIMessage": {
+      "title": "AI Companion Message",
+      "description": "Message inside a student AI Companion conversation.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "conversationId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "role": { "type": "string", "enum": ["user", "assistant"] },
+        "content": { "type": "string", "maxLength": 10000 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "conversationId", "userId", "role", "content", "createdAt"]
+    },
+    "TrustGuardReport": {
+      "title": "TrustGuard Report",
+      "description": "Student-submitted scholarship authenticity check or scam report.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "reportCategory": { "type": "string", "enum": ["scam_check", "document_consistency"] },
+        "submittedUrlOrText": { "type": "string", "maxLength": 1500 },
+        "claimsFeeOrDeposit": { "type": "boolean" },
+        "riskLevel": { "type": "string", "enum": ["Low Risk", "Caution", "High Risk", "Unassessed"] },
+        "analysisSummary": { "type": "string", "maxLength": 3000 },
+        "status": { "type": "string", "enum": ["Open", "Under Review", "Verified Safe", "Confirmed Scam"] },
+        "adminNotes": { "type": "string", "maxLength": 1000 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "submittedUrlOrText", "riskLevel", "status", "createdAt", "updatedAt"]
+    },
+    "TrustGuardDocumentAssessment": {
+      "title": "TrustGuard Document Assessment",
+      "description": "Versioned deterministic document consistency, discrepancy, and risk intelligence snapshot.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "analysisVersion": { "type": "string", "maxLength": 60 },
+        "dataFingerprint": { "type": "string", "maxLength": 60 },
+        "overallVerificationStatus": {
+          "type": "string",
+          "enum": [
+            "Not Analyzed",
+            "Analysis In Progress",
+            "Consistency Check Completed",
+            "Manual Review Required",
+            "Information Mismatch Detected",
+            "Unable to Verify",
+            "Verified Against Available Records"
+          ]
+        },
+        "documentsTotalCount": { "type": "number" },
+        "documentsAnalyzedCount": { "type": "number" },
+        "severityCounts": { "type": "object" },
+        "documentResults": { "type": "array" },
+        "findings": { "type": "array" },
+        "correctiveActions": { "type": "array" },
+        "changeSummary": { "type": "object" },
+        "aiSummary": { "type": "string", "maxLength": 5000 },
+        "limitationNotice": { "type": "string", "maxLength": 800 },
+        "disclaimer": { "type": "string", "maxLength": 600 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "userId",
+        "analysisVersion",
+        "dataFingerprint",
+        "overallVerificationStatus",
+        "documentsTotalCount",
+        "documentsAnalyzedCount",
+        "severityCounts",
+        "documentResults",
+        "findings",
+        "correctiveActions",
+        "limitationNotice",
+        "disclaimer",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "User-targeted scholarship match, deadline, application, document, readiness, or account/announcement notification.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 200 },
+        "message": { "type": "string", "maxLength": 600 },
+        "category": { "type": "string", "enum": ["Scholarship", "Application", "Document", "Readiness", "Account", "Deadline", "Eligibility", "TrustGuard", "Checklist", "System"] },
+        "subCategory": { "type": "string", "maxLength": 80 },
+        "priority": { "type": "string", "enum": ["High", "Medium", "Low"] },
+        "applicationId": { "type": "string", "maxLength": 128 },
+        "scholarshipId": { "type": "string", "maxLength": 128 },
+        "documentId": { "type": "string", "maxLength": 128 },
+        "announcementId": { "type": "string", "maxLength": 128 },
+        "officialSourceUrl": { "type": "string", "maxLength": 500 },
+        "verifiedDeadline": { "type": "string", "maxLength": 40 },
+        "actionRoute": { "type": "string", "maxLength": 200 },
+        "dedupeKey": { "type": "string", "maxLength": 200 },
+        "deliveryChannel": { "type": "string", "enum": ["in-app", "email", "in-app+email"] },
+        "deliveryStatus": { "type": "string", "enum": ["Delivered In-App", "Email Pending", "Email Sent", "Email Delivered", "Email Failed", "Email Not Configured"] },
+        "isRead": { "type": "boolean" },
+        "readAt": { "type": "string", "format": "date-time" },
+        "isArchived": { "type": "boolean" },
+        "archivedAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "title", "message", "isRead", "createdAt"]
+    },
+    "NotificationPreference": {
+      "title": "Notification Preference",
+      "description": "Student notification category toggles, deadline reminder intervals, and email delivery preferences.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "scholarshipAlertsEnabled": { "type": "boolean" },
+        "applicationAlertsEnabled": { "type": "boolean" },
+        "documentAlertsEnabled": { "type": "boolean" },
+        "readinessAlertsEnabled": { "type": "boolean" },
+        "accountSecurityAlertsEnabled": { "type": "boolean" },
+        "deadlineRemindersEnabled": { "type": "boolean" },
+        "deadlineIntervalsDays": { "type": "array", "items": { "type": "number" } },
+        "missingDocsAlertsEnabled": { "type": "boolean" },
+        "statusChangeAlertsEnabled": { "type": "boolean" },
+        "emailDigestRequested": { "type": "boolean" },
+        "emailNotificationsEnabled": { "type": "boolean" },
+        "emailDeliveryStatus": { "type": "string", "maxLength": 120 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "deadlineRemindersEnabled", "missingDocsAlertsEnabled", "statusChangeAlertsEnabled", "emailDigestRequested", "emailDeliveryStatus", "updatedAt"]
+    },
+    "NotificationDeliveryLog": {
+      "title": "Notification Delivery Log",
+      "description": "Audit log of notification delivery attempts, provider responses, retries, and failures.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "notificationId": { "type": "string", "maxLength": 128 },
+        "recipientEmail": { "type": "string", "maxLength": 200 },
+        "channel": { "type": "string", "enum": ["email", "in-app"] },
+        "provider": { "type": "string", "maxLength": 60 },
+        "idempotencyKey": { "type": "string", "maxLength": 200 },
+        "status": { "type": "string", "enum": ["Pending", "Sent", "Delivered", "Failed", "Not Configured"] },
+        "attempts": { "type": "number" },
+        "httpStatus": { "type": "number" },
+        "providerMessageId": { "type": "string", "maxLength": 200 },
+        "errorMessage": { "type": "string", "maxLength": 600 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "channel", "provider", "idempotencyKey", "status", "attempts", "createdAt", "updatedAt"]
+    },
+    "AdminAnnouncement": {
+      "title": "Admin Announcement",
+      "description": "Admin-managed platform announcements with audience targeting and publication schedule.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 200 },
+        "message": { "type": "string", "maxLength": 1200 },
+        "category": { "type": "string", "enum": ["Scholarship", "Account", "System", "Deadline", "Maintenance"] },
+        "targetAudience": { "type": "string", "enum": ["all", "onboarded", "pending_onboarding", "filtered"] },
+        "targetStates": { "type": "array", "items": { "type": "string" } },
+        "targetEducationLevels": { "type": "array", "items": { "type": "string" } },
+        "status": { "type": "string", "enum": ["Draft", "Scheduled", "Published", "Expired", "Unpublished"] },
+        "publishAt": { "type": "string", "maxLength": 40 },
+        "expiresAt": { "type": "string", "maxLength": 40 },
+        "actionRoute": { "type": "string", "maxLength": 200 },
+        "deliveredCount": { "type": "number" },
+        "createdByUid": { "type": "string", "maxLength": 128 },
+        "createdByEmail": { "type": "string", "maxLength": 200 },
+        "publishedByUid": { "type": "string", "maxLength": 128 },
+        "publishedAt": { "type": "string", "maxLength": 40 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "title", "message", "category", "targetAudience", "status", "createdByUid", "createdByEmail", "createdAt", "updatedAt"]
+    },
+    "ScheduledNotificationRun": {
+      "title": "Scheduled Notification Run",
+      "description": "Execution record for automated scholarship matching and deadline intelligence sweeps.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "triggerType": { "type": "string", "enum": ["startup", "cron_interval", "admin_manual", "user_sync"] },
+        "status": { "type": "string", "enum": ["Completed", "Partial", "Failed", "Skipped (No Server Credentials)"] },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "completedAt": { "type": "string", "format": "date-time" },
+        "scholarshipsEvaluated": { "type": "number" },
+        "applicationsEvaluated": { "type": "number" },
+        "studentsEvaluated": { "type": "number" },
+        "alertsGenerated": { "type": "number" },
+        "emailsAttempted": { "type": "number" },
+        "emailsSent": { "type": "number" },
+        "emailsFailed": { "type": "number" },
+        "errorSummary": { "type": "string", "maxLength": 600 },
+        "triggeredByUid": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["id", "triggerType", "status", "startedAt", "completedAt", "scholarshipsEvaluated", "applicationsEvaluated", "studentsEvaluated", "alertsGenerated", "emailsAttempted", "emailsSent", "emailsFailed"]
+    },
+    "AdminAuditLog": {
+      "title": "Admin Audit Log",
+      "description": "Immutable administrative action and security audit log.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "adminUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "adminEmail": { "type": "string", "maxLength": 200 },
+        "adminRole": { "type": "string", "enum": ["admin", "super_admin"] },
+        "action": { "type": "string", "maxLength": 80 },
+        "entityType": { "type": "string", "maxLength": 60 },
+        "entityId": { "type": "string", "maxLength": 128 },
+        "summary": { "type": "string", "maxLength": 600 },
+        "changesSummary": { "type": "string", "maxLength": 1200 },
+        "requestId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "adminUid", "adminEmail", "adminRole", "action", "entityType", "entityId", "summary", "createdAt"]
+    },
+    "ScholarshipVerificationHistory": {
+      "title": "Scholarship Verification History",
+      "description": "Immutable evidence-based verification history per scholarship.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "scholarshipId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "scholarshipTitle": { "type": "string", "maxLength": 240 },
+        "previousStatus": { "type": "string", "maxLength": 60 },
+        "newStatus": { "type": "string", "maxLength": 60 },
+        "sourceName": { "type": "string", "maxLength": 200 },
+        "officialSourceUrl": { "type": "string", "maxLength": 500 },
+        "sourceEvidence": { "type": "string", "maxLength": 1500 },
+        "verificationNotes": { "type": "string", "maxLength": 1000 },
+        "httpCheckStatus": { "type": "number" },
+        "adminUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "adminEmail": { "type": "string", "maxLength": 200 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "scholarshipId", "scholarshipTitle", "previousStatus", "newStatus", "officialSourceUrl", "sourceEvidence", "adminUid", "adminEmail", "createdAt"]
+    },
+    "ScholarshipRuleVersion": {
+      "title": "Scholarship Rule Version",
+      "description": "Immutable snapshot of scholarship eligibility rules per version.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "scholarshipId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "versionNumber": { "type": "number" },
+        "changeSummary": { "type": "string", "maxLength": 500 },
+        "rulesSnapshot": { "type": "array" },
+        "changedByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "changedByEmail": { "type": "string", "maxLength": 200 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "scholarshipId", "versionNumber", "changeSummary", "rulesSnapshot", "changedByUid", "changedByEmail", "createdAt"]
+    },
+    "DataQualityIssue": {
+      "title": "Data Quality Issue",
+      "description": "Detected scholarship data quality or duplicate candidate record awaiting admin review.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "scholarshipId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "scholarshipTitle": { "type": "string", "maxLength": 240 },
+        "relatedScholarshipId": { "type": "string", "maxLength": 128 },
+        "relatedScholarshipTitle": { "type": "string", "maxLength": 240 },
+        "issueType": { "type": "string", "maxLength": 80 },
+        "severity": { "type": "string", "enum": ["Critical", "High", "Medium", "Low"] },
+        "description": { "type": "string", "maxLength": 800 },
+        "recommendedCorrection": { "type": "string", "maxLength": 800 },
+        "resolutionStatus": { "type": "string", "enum": ["Open", "Acknowledged", "Resolved", "Ignored"] },
+        "detectedAt": { "type": "string", "format": "date-time" },
+        "resolvedAt": { "type": "string", "format": "date-time" },
+        "resolvedByUid": { "type": "string", "maxLength": 128 },
+        "resolutionNote": { "type": "string", "maxLength": 600 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "scholarshipId", "scholarshipTitle", "issueType", "severity", "description", "recommendedCorrection", "resolutionStatus", "detectedAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/profiles/{userId}": {
+      "schema": { "$ref": "#/entities/Profile" },
+      "description": "Private student onboarding and academic profiles isolated to owner and admin."
+    },
+    "/user_roles/{userId}": {
+      "schema": { "$ref": "#/entities/UserRole" },
+      "description": "Role-based access control records managed strictly by Super Admins."
+    },
+    "/scholarships/{scholarshipId}": {
+      "schema": { "$ref": "#/entities/Scholarship" },
+      "description": "Verified Indian scholarship catalogue readable by signed-in students and publicly browseable."
+    },
+    "/scholarship_eligibility_rules/{ruleId}": {
+      "schema": { "$ref": "#/entities/ScholarshipEligibilityRule" },
+      "description": "Structured eligibility rules for scholarships."
+    },
+    "/scholarship_rule_versions/{versionId}": {
+      "schema": { "$ref": "#/entities/ScholarshipRuleVersion" },
+      "description": "Immutable eligibility rule version snapshots."
+    },
+    "/scholarship_verification_history/{historyId}": {
+      "schema": { "$ref": "#/entities/ScholarshipVerificationHistory" },
+      "description": "Immutable scholarship evidence verification audit trail."
+    },
+    "/data_quality_issues/{issueId}": {
+      "schema": { "$ref": "#/entities/DataQualityIssue" },
+      "description": "Detected scholarship data quality and duplicate candidate findings."
+    },
+    "/admin_audit_logs/{logId}": {
+      "schema": { "$ref": "#/entities/AdminAuditLog" },
+      "description": "Immutable administrative activity audit trail."
+    },
+    "/applications/{applicationId}": {
+      "schema": { "$ref": "#/entities/Application" },
+      "description": "Student scholarship application tracking records."
+    },
+    "/application_events/{eventId}": {
+      "schema": { "$ref": "#/entities/ApplicationEvent" },
+      "description": "Chronological timeline audit events for tracked scholarship applications."
+    },
+    "/application_checklist_items/{itemId}": {
+      "schema": { "$ref": "#/entities/ApplicationChecklistItem" },
+      "description": "Scholarship-specific requirement checklist items for tracked applications."
+    },
+    "/saved_scholarships/{savedId}": {
+      "schema": { "$ref": "#/entities/SavedScholarship" },
+      "description": "Student bookmarked scholarships."
+    },
+    "/documents/{documentId}": {
+      "schema": { "$ref": "#/entities/DocumentRecord" },
+      "description": "Student uploaded document metadata."
+    },
+    "/document_analysis/{analysisId}": {
+      "schema": { "$ref": "#/entities/DocumentAnalysis" },
+      "description": "AI document analysis outputs."
+    },
+    "/eligibility_assessments/{assessmentId}": {
+      "schema": { "$ref": "#/entities/EligibilityAssessment" },
+      "description": "Saved explainable eligibility evaluations."
+    },
+    "/eligibility_assessment_details/{detailId}": {
+      "schema": { "$ref": "#/entities/EligibilityAssessmentDetail" },
+      "description": "Criterion-by-criterion deterministic audit records linked to eligibility_assessments."
+    },
+    "/readiness_assessments/{assessmentId}": {
+      "schema": { "$ref": "#/entities/ReadinessAssessment" },
+      "description": "Saved application readiness scores and action plans."
+    },
+    "/ai_conversations/{conversationId}": {
+      "schema": { "$ref": "#/entities/AIConversation" },
+      "description": "AI Companion conversation metadata."
+    },
+    "/ai_messages/{messageId}": {
+      "schema": { "$ref": "#/entities/AIMessage" },
+      "description": "AI Companion chat messages."
+    },
+    "/trustguard_reports/{reportId}": {
+      "schema": { "$ref": "#/entities/TrustGuardReport" },
+      "description": "TrustGuard scholarship verification and scam reports."
+    },
+    "/trustguard_assessments/{assessmentId}": {
+      "schema": { "$ref": "#/entities/TrustGuardDocumentAssessment" },
+      "description": "Versioned TrustGuard document verification & consistency audit snapshots isolated per student."
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/Notification" },
+      "description": "Owner-isolated student notifications across scholarship, application, document, readiness, and account categories."
+    },
+    "/notification_preferences/{userId}": {
+      "schema": { "$ref": "#/entities/NotificationPreference" },
+      "description": "Owner-isolated student notification and reminder preferences."
+    },
+    "/notification_delivery_logs/{logId}": {
+      "schema": { "$ref": "#/entities/NotificationDeliveryLog" },
+      "description": "Owner-isolated email and in-app notification delivery logs with retry and status tracking."
+    },
+    "/announcements/{announcementId}": {
+      "schema": { "$ref": "#/entities/AdminAnnouncement" },
+      "description": "Admin-managed platform announcements with targeting and publication lifecycle."
+    },
+    "/notification_runs/{runId}": {
+      "schema": { "$ref": "#/entities/ScheduledNotificationRun" },
+      "description": "Scheduled notification matching and deadline intelligence execution records."
+    }
+  }
+}

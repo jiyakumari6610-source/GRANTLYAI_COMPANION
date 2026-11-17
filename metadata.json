@@ -1,0 +1,6 @@
+{
+  "name": "GRANTLY AI",
+  "description": "AI-powered scholarship intelligence platform for Indian students — discovery, explainable eligibility, document analysis, readiness tracking, and TrustGuard verification.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
