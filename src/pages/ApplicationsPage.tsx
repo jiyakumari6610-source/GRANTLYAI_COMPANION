@@ -64,6 +64,7 @@ import type {
   StudentProfile,
   TrustGuardDocumentAssessment,
 } from '../types/database.ts';
+import { peekPublicCache, peekUserCache, setUserCache } from '../lib/workspaceCache.ts';
 
 type TrackerViewTab = 'All' | 'Active' | 'Submitted' | 'Completed' | 'Requiring Attention';
 type DeadlineFilterOption =
@@ -85,18 +86,50 @@ export default function ApplicationsPage() {
   const { user, profile: authProfile, getIdToken } = useAuth();
   const navigate = useNavigate();
 
-  const [applications, setApplications] = useState<ApplicationRecord[]>([]);
-  const [scholarships, setScholarships] = useState<Scholarship[]>([]);
-  const [profile, setProfile] = useState<StudentProfile | null>(authProfile);
-  const [documents, setDocuments] = useState<DocumentRecord[]>([]);
-  const [analyses, setAnalyses] = useState<DocumentAnalysis[]>([]);
-  const [tgAssessment, setTgAssessment] = useState<TrustGuardDocumentAssessment | null>(null);
-  const [checklistItems, setChecklistItems] = useState<ApplicationChecklistItemRecord[]>([]);
-  const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
-  const [preferences, setPreferences] = useState<NotificationPreferenceRecord | null>(null);
+  const cachedApps = peekUserCache<ApplicationRecord[]>(user?.uid, 'applications');
+  const cachedSch = peekPublicCache<{ items: Scholarship[]; isEmptyDatabase: boolean }>('scholarships');
+  const cachedProfile = peekUserCache<StudentProfile | null>(user?.uid, 'profile');
+  const cachedDocs = peekUserCache<DocumentRecord[]>(user?.uid, 'documents');
+  const cachedAnalyses = peekUserCache<DocumentAnalysis[]>(user?.uid, 'document_analysis');
+  const cachedTg = peekUserCache<TrustGuardDocumentAssessment[]>(user?.uid, 'trustguard_assessments');
+  const cachedChk = peekUserCache<ApplicationChecklistItemRecord[]>(
+    user?.uid,
+    'application_checklist_items'
+  );
+  const cachedNotifs = peekUserCache<NotificationRecord[]>(user?.uid, 'notifications');
+  const cachedPrefs = peekUserCache<NotificationPreferenceRecord | null>(
+    user?.uid,
+    'notification_preferences'
+  );
 
-  const [selectedScholarshipId, setSelectedScholarshipId] = useState('');
-  const [loading, setLoading] = useState(true);
+  const hasWarmCache = Boolean(
+    cachedApps && cachedSch && cachedDocs && cachedAnalyses && cachedChk && cachedNotifs
+  );
+
+  const [applications, setApplications] = useState<ApplicationRecord[]>(() => cachedApps ?? []);
+  const [scholarships, setScholarships] = useState<Scholarship[]>(() => cachedSch?.items ?? []);
+  const [profile, setProfile] = useState<StudentProfile | null>(
+    () => cachedProfile ?? authProfile
+  );
+  const [documents, setDocuments] = useState<DocumentRecord[]>(() => cachedDocs ?? []);
+  const [analyses, setAnalyses] = useState<DocumentAnalysis[]>(() => cachedAnalyses ?? []);
+  const [tgAssessment, setTgAssessment] = useState<TrustGuardDocumentAssessment | null>(
+    () => cachedTg?.[0] ?? null
+  );
+  const [checklistItems, setChecklistItems] = useState<ApplicationChecklistItemRecord[]>(
+    () => cachedChk ?? []
+  );
+  const [notifications, setNotifications] = useState<NotificationRecord[]>(() => cachedNotifs ?? []);
+  const [preferences, setPreferences] = useState<NotificationPreferenceRecord | null>(
+    () => cachedPrefs ?? null
+  );
+
+  const [selectedScholarshipId, setSelectedScholarshipId] = useState(() => {
+    const list = cachedSch?.items ?? [];
+    const first = list.find((s) => s.verificationStatus !== 'Archived') ?? list[0];
+    return first?.id ?? '';
+  });
+  const [loading, setLoading] = useState(!hasWarmCache);
   const [adding, setAdding] = useState(false);
   const [syncingNotifs, setSyncingNotifs] = useState(false);
   const [savingPrefs, setSavingPrefs] = useState(false);
@@ -113,84 +146,82 @@ export default function ApplicationsPage() {
   const [eligibilityFilter, setEligibilityFilter] = useState('All');
   const [sortBy, setSortBy] = useState<'attention' | 'deadline' | 'updated'>('attention');
 
-  const loadAll = useCallback(async () => {
-    if (!user) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const [
-        apps,
-        sch,
-        prof,
-        docs,
-        ana,
-        tgList,
-        chkList,
-        notifs,
-        prefs,
-      ] = await Promise.all([
-        getApplications(user.uid),
-        getScholarships(),
-        getProfile(user.uid),
-        getDocuments(user.uid),
-        getDocumentAnalyses(user.uid),
-        getTrustGuardAssessments(user.uid),
-        getApplicationChecklistItems(user.uid),
-        getNotifications(user.uid),
-        getNotificationPreferences(user.uid),
-      ]);
-
-      setApplications(apps);
-      setScholarships(sch.items);
-      setProfile(prof ?? authProfile);
-      setDocuments(docs);
-      setAnalyses(ana);
-      setTgAssessment(tgList[0] ?? null);
-      setChecklistItems(chkList);
-      setNotifications(notifs);
-      setPreferences(
-        prefs ?? {
-          uid: user.uid,
-          deadlineRemindersEnabled: true,
-          missingDocsAlertsEnabled: true,
-          statusChangeAlertsEnabled: true,
-          emailDigestRequested: false,
-          emailDeliveryStatus: 'Not Configured (Requires SMTP/Email Provider)',
-          updatedAt: new Date().toISOString(),
-        }
-      );
-
-      const firstTrackable = sch.items.find((s) => s.verificationStatus !== 'Archived') ?? sch.items[0];
-      if (firstTrackable && !selectedScholarshipId) {
-        setSelectedScholarshipId(firstTrackable.id);
+  const loadAll = useCallback(
+    async (showSkeleton = false) => {
+      if (!user) return;
+      if (showSkeleton) {
+        setLoading(true);
       }
+      setError(null);
+      try {
+        const [apps, sch, prof, docs, ana, tgList, chkList, notifs, prefs] = await Promise.all([
+          getApplications(user.uid),
+          getScholarships(),
+          getProfile(user.uid),
+          getDocuments(user.uid),
+          getDocumentAnalyses(user.uid),
+          getTrustGuardAssessments(user.uid),
+          getApplicationChecklistItems(user.uid),
+          getNotifications(user.uid),
+          getNotificationPreferences(user.uid),
+        ]);
 
-      if (apps.length > 0) {
-        try {
-          const token = await getIdToken();
-          const syncRes = await postProtectedAi<{
-            createdNotifications: NotificationRecord[];
-          }>('/api/applications/sync-notifications', token, {});
-          if (syncRes.createdNotifications.length > 0) {
-            setNotifications((prev) =>
-              [...syncRes.createdNotifications, ...prev].sort((a, b) =>
-                b.createdAt.localeCompare(a.createdAt)
-              )
-            );
+        setApplications(apps);
+        setScholarships(sch.items);
+        setProfile(prof ?? authProfile);
+        setDocuments(docs);
+        setAnalyses(ana);
+        setTgAssessment(tgList[0] ?? null);
+        setChecklistItems(chkList);
+        setNotifications(notifs);
+        setPreferences(
+          prefs ?? {
+            uid: user.uid,
+            deadlineRemindersEnabled: true,
+            missingDocsAlertsEnabled: true,
+            statusChangeAlertsEnabled: true,
+            emailDigestRequested: false,
+            emailDeliveryStatus: 'Not Configured (Requires SMTP/Email Provider)',
+            updatedAt: new Date().toISOString(),
           }
-        } catch {
-          // Non-blocking sync
+        );
+
+        const firstTrackable =
+          sch.items.find((s) => s.verificationStatus !== 'Archived') ?? sch.items[0];
+        if (firstTrackable && !selectedScholarshipId) {
+          setSelectedScholarshipId(firstTrackable.id);
         }
+
+        const alreadySyncedRecently = peekUserCache<boolean>(user.uid, 'apps_notif_synced');
+        if (apps.length > 0 && !alreadySyncedRecently) {
+          try {
+            setUserCache(user.uid, 'apps_notif_synced', true, 60_000);
+            const token = await getIdToken();
+            const syncRes = await postProtectedAi<{
+              createdNotifications: NotificationRecord[];
+            }>('/api/applications/sync-notifications', token, {});
+            if (syncRes.createdNotifications.length > 0) {
+              setNotifications((prev) =>
+                [...syncRes.createdNotifications, ...prev].sort((a, b) =>
+                  b.createdAt.localeCompare(a.createdAt)
+                )
+              );
+            }
+          } catch {
+            // Non-blocking sync
+          }
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Unable to load application tracker data.');
+      } finally {
+        setLoading(false);
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to load application tracker data.');
-    } finally {
-      setLoading(false);
-    }
-  }, [user, authProfile, getIdToken, selectedScholarshipId]);
+    },
+    [user, authProfile, getIdToken, selectedScholarshipId]
+  );
 
   useEffect(() => {
-    void loadAll();
+    void loadAll(false);
   }, [loadAll]);
 
   const scholarshipMap = useMemo(
@@ -447,8 +478,15 @@ export default function ApplicationsPage() {
       <PageTransition>
         <div className="space-y-6">
           {error && (
-            <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-sm text-rose-200">
-              {error}
+            <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-sm text-rose-200 flex flex-wrap items-center justify-between gap-3">
+              <span>{error}</span>
+              <button
+                type="button"
+                onClick={() => void loadAll(true)}
+                className="px-3 py-1.5 text-xs font-semibold text-rose-100 bg-rose-500/25 hover:bg-rose-500/35 border border-rose-400/30 rounded-lg whitespace-nowrap"
+              >
+                Retry
+              </button>
             </div>
           )}
 

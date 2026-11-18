@@ -32,7 +32,8 @@ import {
   AdminTrustGuardMonitorPanel,
 } from '../components/admin/AdminOperationsPanels.tsx';
 import { useAuth } from '../context/AuthContext.tsx';
-import { getProtectedApi, postProtectedAi } from '../lib/apiClient.ts';
+import { getCachedProtectedApi, postProtectedAi } from '../lib/apiClient.ts';
+import { invalidateUserCache, peekPublicCache, peekUserCache } from '../lib/workspaceCache.ts';
 import type {
   AdminAuditLogRecord,
   AdminDashboardMetrics,
@@ -68,12 +69,28 @@ const ADMIN_TABS: Array<{ key: AdminTabKey; label: string; icon: React.Component
 
 export default function AdminDashboardPage() {
   const { user, isSuperAdmin, getIdToken } = useAuth();
+  const cachedOverview = peekUserCache<{
+    metrics: AdminDashboardMetrics;
+    recentAuditLogs: AdminAuditLogRecord[];
+  }>(user?.uid, 'api:/api/admin/overview');
+  const cachedAdminSch = peekUserCache<{ scholarships: Scholarship[] }>(
+    user?.uid,
+    'api:/api/admin/scholarships'
+  );
+  const cachedPublicSch = peekPublicCache<{ items: Scholarship[] }>('scholarships');
+
   const [activeTab, setActiveTab] = useState<AdminTabKey>('overview');
-  const [metrics, setMetrics] = useState<AdminDashboardMetrics | null>(null);
-  const [recentAuditLogs, setRecentAuditLogs] = useState<AdminAuditLogRecord[]>([]);
-  const [scholarships, setScholarships] = useState<Scholarship[]>([]);
+  const [metrics, setMetrics] = useState<AdminDashboardMetrics | null>(
+    () => cachedOverview?.metrics ?? null
+  );
+  const [recentAuditLogs, setRecentAuditLogs] = useState<AdminAuditLogRecord[]>(
+    () => cachedOverview?.recentAuditLogs ?? []
+  );
+  const [scholarships, setScholarships] = useState<Scholarship[]>(
+    () => cachedAdminSch?.scholarships ?? cachedPublicSch?.items ?? []
+  );
   const [preselectedScholarshipId, setPreselectedScholarshipId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => !(user && cachedOverview && cachedAdminSch));
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -82,17 +99,27 @@ export default function AdminDashboardPage() {
     setError(err);
   }, []);
 
-  const loadGovernanceData = useCallback(async () => {
+  const loadGovernanceData = useCallback(async (forceRefresh = false) => {
     if (!user) return;
-    setLoading(true);
+    if (forceRefresh) {
+      invalidateUserCache(user.uid, 'api:/api/admin');
+      setLoading(true);
+    } else if (!peekUserCache(user.uid, 'api:/api/admin/overview')) {
+      setLoading(true);
+    }
+    setError(null);
     try {
-      const token = await getIdToken();
       const [overviewRes, schRes] = await Promise.all([
-        getProtectedApi<{
+        getCachedProtectedApi<{
           metrics: AdminDashboardMetrics;
           recentAuditLogs: AdminAuditLogRecord[];
-        }>('/api/admin/overview', token),
-        getProtectedApi<{ scholarships: Scholarship[] }>('/api/admin/scholarships', token),
+        }>(user.uid, '/api/admin/overview', getIdToken, 30_000),
+        getCachedProtectedApi<{ scholarships: Scholarship[] }>(
+          user.uid,
+          '/api/admin/scholarships',
+          getIdToken,
+          30_000
+        ),
       ]);
       setMetrics(overviewRes.metrics);
       setRecentAuditLogs(overviewRes.recentAuditLogs);
@@ -104,8 +131,13 @@ export default function AdminDashboardPage() {
     }
   }, [user, getIdToken]);
 
+  const forceReloadGovernanceData = useCallback(
+    () => loadGovernanceData(true),
+    [loadGovernanceData]
+  );
+
   useEffect(() => {
-    void loadGovernanceData();
+    void loadGovernanceData(false);
   }, [loadGovernanceData]);
 
   // Verify admin access on server and record audited access once per browser session
@@ -134,7 +166,7 @@ export default function AdminDashboardPage() {
       primaryAction={
         <button
           type="button"
-          onClick={() => void loadGovernanceData()}
+          onClick={() => void forceReloadGovernanceData()}
           disabled={loading}
           className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-200 bg-[#101933] border border-slate-700/80 hover:bg-slate-800 rounded-xl transition-colors disabled:opacity-60 whitespace-nowrap shrink-0"
         >
@@ -185,9 +217,18 @@ export default function AdminDashboardPage() {
         )}
 
         {error && (
-          <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs sm:text-sm text-rose-200 flex items-center gap-2.5">
-            <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
-            <span>{error}</span>
+          <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs sm:text-sm text-rose-200 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+              <span>{error}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => void forceReloadGovernanceData()}
+              className="px-3 py-1 text-xs font-semibold rounded-lg bg-rose-500/20 border border-rose-400/40 text-rose-100 hover:bg-rose-500/30 shrink-0"
+            >
+              Retry
+            </button>
           </div>
         )}
 
@@ -203,7 +244,7 @@ export default function AdminDashboardPage() {
           <AdminScholarshipsPanel
             scholarships={scholarships}
             getIdToken={getIdToken}
-            onReload={loadGovernanceData}
+            onReload={forceReloadGovernanceData}
             onNotify={handleNotify}
             onOpenVerification={(schId) => {
               setPreselectedScholarshipId(schId);
@@ -221,7 +262,7 @@ export default function AdminDashboardPage() {
             scholarships={scholarships}
             preselectedScholarshipId={preselectedScholarshipId}
             getIdToken={getIdToken}
-            onReload={loadGovernanceData}
+            onReload={forceReloadGovernanceData}
             onNotify={handleNotify}
           />
         )}
@@ -231,7 +272,7 @@ export default function AdminDashboardPage() {
             scholarships={scholarships}
             preselectedScholarshipId={preselectedScholarshipId}
             getIdToken={getIdToken}
-            onReload={loadGovernanceData}
+            onReload={forceReloadGovernanceData}
             onNotify={handleNotify}
           />
         )}

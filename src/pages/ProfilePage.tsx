@@ -4,6 +4,7 @@ import { AppShell } from '../components/AppShell.tsx';
 import { PageTransition, SkeletonCard } from '../components/ui/MotionPrimitives.tsx';
 import { useAuth } from '../context/AuthContext.tsx';
 import { getNotifications, markNotificationRead, saveProfile } from '../lib/firestoreRepo.ts';
+import { peekUserCache } from '../lib/workspaceCache.ts';
 import {
   INDIAN_STATES_AND_UTS,
   STANDARD_CERTIFICATES,
@@ -19,7 +20,9 @@ import {
 export default function ProfilePage() {
   const { user, profile, refreshProfile } = useAuth();
   const [form, setForm] = useState<StudentProfile | null>(null);
-  const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
+  const [notifications, setNotifications] = useState<NotificationRecord[]>(
+    () => peekUserCache<NotificationRecord[]>(user?.uid, 'notifications') ?? []
+  );
   const [saving, setSaving] = useState(false);
   const [savedBanner, setSavedBanner] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -43,7 +46,9 @@ export default function ProfilePage() {
 
   useEffect(() => {
     if (!user) return;
-    getNotifications(user.uid).then(setNotifications);
+    getNotifications(user.uid)
+      .then(setNotifications)
+      .catch(() => {});
   }, [user]);
 
   const handleSave = async (e: React.FormEvent) => {

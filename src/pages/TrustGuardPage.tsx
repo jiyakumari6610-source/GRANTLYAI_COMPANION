@@ -40,6 +40,7 @@ import {
   saveTrustGuardAssessment,
   updateTrustGuardAssessmentFindings,
 } from '../lib/firestoreRepo.ts';
+import { peekPublicCache, peekUserCache } from '../lib/workspaceCache.ts';
 import {
   evaluateTrustGuardVerification,
   TRUSTGUARD_DISCLAIMER,
@@ -113,16 +114,44 @@ export default function TrustGuardPage() {
   const { user, isAdmin, profile, getIdToken } = useAuth();
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('documents');
 
+  const cachedDocs = peekUserCache<DocumentRecord[]>(user?.uid, 'documents');
+  const cachedAnalyses = peekUserCache<DocumentAnalysis[]>(user?.uid, 'document_analysis');
+  const cachedScholarships = peekPublicCache<{ items: Scholarship[]; isEmptyDatabase: boolean }>('scholarships');
+  const cachedSaved = peekUserCache<SavedScholarship[]>(user?.uid, 'saved_scholarships');
+  const cachedApps = peekUserCache<ApplicationRecord[]>(user?.uid, 'applications');
+  const cachedAssessments = peekUserCache<TrustGuardDocumentAssessment[]>(
+    user?.uid,
+    'trustguard_assessments'
+  );
+  const cachedReports = peekUserCache<TrustGuardReport[]>(
+    user?.uid,
+    isAdmin ? 'trustguard_reports:admin' : 'trustguard_reports:student'
+  );
+  const hasWarmWorkspace = Boolean(
+    user &&
+      cachedDocs !== undefined &&
+      cachedScholarships !== undefined &&
+      cachedAssessments !== undefined
+  );
+
   // Shared student records for Document Verification Intelligence
-  const [documents, setDocuments] = useState<DocumentRecord[]>([]);
-  const [documentAnalyses, setDocumentAnalyses] = useState<DocumentAnalysis[]>([]);
-  const [scholarships, setScholarships] = useState<Scholarship[]>([]);
-  const [savedScholarships, setSavedScholarships] = useState<SavedScholarship[]>([]);
-  const [applications, setApplications] = useState<ApplicationRecord[]>([]);
-  const [assessments, setAssessments] = useState<TrustGuardDocumentAssessment[]>([]);
+  const [documents, setDocuments] = useState<DocumentRecord[]>(() => cachedDocs ?? []);
+  const [documentAnalyses, setDocumentAnalyses] = useState<DocumentAnalysis[]>(
+    () => cachedAnalyses ?? []
+  );
+  const [scholarships, setScholarships] = useState<Scholarship[]>(
+    () => cachedScholarships?.items ?? []
+  );
+  const [savedScholarships, setSavedScholarships] = useState<SavedScholarship[]>(
+    () => cachedSaved ?? []
+  );
+  const [applications, setApplications] = useState<ApplicationRecord[]>(() => cachedApps ?? []);
+  const [assessments, setAssessments] = useState<TrustGuardDocumentAssessment[]>(
+    () => cachedAssessments ?? []
+  );
   const [selectedSnapshotId, setSelectedSnapshotId] = useState<string>('latest');
 
-  const [loadingWorkspace, setLoadingWorkspace] = useState(true);
+  const [loadingWorkspace, setLoadingWorkspace] = useState(!hasWarmWorkspace);
   const [analyzing, setAnalyzing] = useState(false);
   const [savingFindingId, setSavingFindingId] = useState<string | null>(null);
   const [docError, setDocError] = useState<string | null>(null);
@@ -143,7 +172,7 @@ export default function TrustGuardPage() {
   const [previewBusyId, setPreviewBusyId] = useState<string | null>(null);
 
   // Existing URL & Message Scam Screening state
-  const [reports, setReports] = useState<TrustGuardReport[]>([]);
+  const [reports, setReports] = useState<TrustGuardReport[]>(() => cachedReports ?? []);
   const [submittedUrlOrText, setSubmittedUrlOrText] = useState('');
   const [claimsFeeOrDeposit, setClaimsFeeOrDeposit] = useState(false);
   const [scamBusy, setScamBusy] = useState(false);
@@ -159,9 +188,15 @@ export default function TrustGuardPage() {
     };
   }, []);
 
-  const loadWorkspace = useCallback(async () => {
+  const loadWorkspace = useCallback(async (forceSpinner = false) => {
     if (!user) return;
-    setLoadingWorkspace(true);
+    const warm = Boolean(
+      peekUserCache(user.uid, 'trustguard_assessments') !== undefined &&
+        peekPublicCache('scholarships') !== undefined
+    );
+    if (forceSpinner || !warm) {
+      setLoadingWorkspace(true);
+    }
     setDocError(null);
     try {
       const [docs, analyses, schRes, saved, apps, pastAssessments, pastReports] =
@@ -574,9 +609,18 @@ export default function TrustGuardPage() {
             )}
 
             {docError && (
-              <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-sm text-rose-200 flex items-start gap-2.5">
-                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
-                <span>{docError}</span>
+              <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-sm text-rose-200 flex items-center justify-between gap-3">
+                <div className="flex items-start gap-2.5">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
+                  <span>{docError}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void loadWorkspace(true)}
+                  className="px-3 py-1 text-xs font-semibold rounded-lg bg-rose-500/20 border border-rose-400/40 text-rose-100 hover:bg-rose-500/30 shrink-0"
+                >
+                  Retry
+                </button>
               </div>
             )}
 

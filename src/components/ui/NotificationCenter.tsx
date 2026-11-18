@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import {
@@ -18,7 +18,11 @@ import {
   X,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.tsx';
-import { getProtectedApi, postProtectedAi, putProtectedApi } from '../../lib/apiClient.ts';
+import {
+  getCachedProtectedApi,
+  postProtectedAi,
+  putProtectedApi,
+} from '../../lib/apiClient.ts';
 import {
   archiveNotification,
   deleteNotification,
@@ -28,6 +32,7 @@ import {
   markNotificationRead,
   saveNotificationPreferences,
 } from '../../lib/firestoreRepo.ts';
+import { invalidateUserCache, subscribeWorkspaceCache } from '../../lib/workspaceCache.ts';
 import {
   normalizeNotificationPreferences,
   normalizeNotificationUiCategory,
@@ -71,7 +76,7 @@ function categoryMeta(cat?: NotificationCategory | string): {
   }
 }
 
-export function NotificationCenter() {
+export const NotificationCenter = memo(function NotificationCenter() {
   const { user, getIdToken } = useAuth();
   const [open, setOpen] = useState(false);
   const [showPrefs, setShowPrefs] = useState(false);
@@ -83,17 +88,18 @@ export function NotificationCenter() {
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [savingPrefs, setSavingPrefs] = useState(false);
+  const lastFetchedUidRef = useRef<string | null>(null);
 
   const loadNotifications = useCallback(async () => {
     if (!user) return;
     setLoading(true);
     try {
-      const token = await getIdToken();
       const [items, prefsRes] = await Promise.all([
         getNotifications(user.uid),
-        getProtectedApi<{ preferences: NotificationPreferenceRecord }>(
+        getCachedProtectedApi<{ preferences: NotificationPreferenceRecord }>(
+          user.uid,
           '/api/notifications/preferences',
-          token
+          getIdToken
         ).catch(async () => {
           const fallback = await getNotificationPreferences(user.uid);
           return { preferences: normalizeNotificationPreferences(user.uid, fallback) };
@@ -101,6 +107,7 @@ export function NotificationCenter() {
       ]);
       setNotifications(items);
       setPreferences(prefsRes.preferences);
+      lastFetchedUidRef.current = user.uid;
     } catch {
       // Non-blocking in global header
     } finally {
@@ -109,8 +116,24 @@ export function NotificationCenter() {
   }, [user, getIdToken]);
 
   useEffect(() => {
+    if (!user) {
+      setNotifications([]);
+      setPreferences(null);
+      lastFetchedUidRef.current = null;
+      return;
+    }
     void loadNotifications();
-  }, [loadNotifications]);
+  }, [user, loadNotifications]);
+
+  useEffect(() => {
+    if (!user) return;
+    return subscribeWorkspaceCache((scope, keyPrefix) => {
+      if (scope !== 'user') return;
+      if (!keyPrefix || keyPrefix === 'notifications' || keyPrefix === 'notification_preferences') {
+        void loadNotifications();
+      }
+    });
+  }, [user, loadNotifications]);
 
   useEffect(() => {
     if (!open) return;
@@ -205,6 +228,7 @@ export function NotificationCenter() {
     try {
       const token = await getIdToken();
       await postProtectedAi('/api/notifications/sync', token, {});
+      invalidateUserCache(user.uid, 'notifications');
       await loadNotifications();
     } catch {
       // Ignore transient error
@@ -613,4 +637,4 @@ export function NotificationCenter() {
       </AnimatePresence>
     </>
   );
-}
+});

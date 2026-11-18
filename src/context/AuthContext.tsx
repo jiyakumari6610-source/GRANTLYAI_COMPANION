@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   createUserWithEmailAndPassword,
   onAuthStateChanged,
@@ -22,6 +22,7 @@ import {
 } from '../lib/firebase.ts';
 import { isPrivilegedRole, isSuperAdminRole, normalizeAppRole } from '../lib/adminGovernanceEngine.ts';
 import { getProfile, getScholarships, saveProfile, seedVerifiedScholarships } from '../lib/firestoreRepo.ts';
+import { ensureCacheOwner, invalidateAllUserCaches } from '../lib/workspaceCache.ts';
 import type { StudentProfile, UserRoleRecord } from '../types/database.ts';
 
 const BOOTSTRAP_ADMIN_EMAIL = 'jiyakumari2480@gmail.com';
@@ -46,6 +47,73 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+async function resolveProfileForUser(firebaseUser: User): Promise<StudentProfile | null> {
+  const existingProfile = await getProfile(firebaseUser.uid);
+  if (existingProfile) {
+    return existingProfile;
+  }
+  if (firebaseUser.emailVerified) {
+    const now = new Date().toISOString();
+    const starterProfile: StudentProfile = {
+      uid: firebaseUser.uid,
+      fullName: firebaseUser.displayName?.trim() || firebaseUser.email?.split('@')[0] || 'Student',
+      email: firebaseUser.email ?? '',
+      onboardingCompleted: false,
+      certificates: [],
+      createdAt: now,
+      updatedAt: now,
+    };
+    await saveProfile(starterProfile);
+    const persisted = await getProfile(firebaseUser.uid);
+    return persisted ?? starterProfile;
+  }
+  return null;
+}
+
+async function resolveRoleForUser(firebaseUser: User): Promise<{
+  role: UserRoleRecord['role'];
+  status: 'active' | 'disabled';
+}> {
+  if (
+    firebaseUser.email?.toLowerCase() === BOOTSTRAP_ADMIN_EMAIL.toLowerCase() &&
+    firebaseUser.emailVerified
+  ) {
+    return { role: 'super_admin', status: 'active' };
+  }
+
+  let resolvedRole: UserRoleRecord['role'] = 'student';
+  let resolvedStatus: 'active' | 'disabled' = 'active';
+  try {
+    const roleSnap = await getDoc(doc(db, 'user_roles', firebaseUser.uid));
+    if (roleSnap.exists()) {
+      const data = roleSnap.data() as UserRoleRecord;
+      resolvedStatus = data.status === 'disabled' ? 'disabled' : 'active';
+      resolvedRole = resolvedStatus === 'disabled' ? 'student' : normalizeAppRole(data.role);
+    }
+  } catch (roleErr) {
+    if (isFirestoreOfflineError(roleErr)) {
+      try {
+        const token = await firebaseUser.getIdToken();
+        const restRole = await fetchFirestoreDocumentViaRest<UserRoleRecord>(
+          'user_roles',
+          firebaseUser.uid,
+          token
+        );
+        if (restRole.exists && restRole.data) {
+          resolvedStatus = restRole.data.status === 'disabled' ? 'disabled' : 'active';
+          resolvedRole =
+            resolvedStatus === 'disabled' ? 'student' : normalizeAppRole(restRole.data.role);
+        }
+      } catch {
+        resolvedRole = 'student';
+      }
+    } else {
+      resolvedRole = 'student';
+    }
+  }
+  return { role: resolvedRole, status: resolvedStatus };
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<StudentProfile | null>(null);
@@ -56,6 +124,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const inFlightLoadRef = useRef<{ uid: string; promise: Promise<void> } | null>(null);
 
   const loadUserData = useCallback((firebaseUser: User | null): Promise<void> => {
+    ensureCacheOwner(firebaseUser?.uid ?? null);
+
     if (!firebaseUser) {
       setProfile(null);
       setUserRole('student');
@@ -69,74 +139,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const runPromise: Promise<void> = (async () => {
       try {
-        const existingProfile = await getProfile(firebaseUser.uid);
+        const [resolvedProfile, roleInfo] = await Promise.all([
+          resolveProfileForUser(firebaseUser),
+          resolveRoleForUser(firebaseUser),
+        ]);
+
+        if (auth.currentUser && auth.currentUser.uid !== firebaseUser.uid) {
+          return;
+        }
+
         setFirestoreReachable(true);
-        if (existingProfile) {
-          setProfile(existingProfile);
-        } else if (firebaseUser.emailVerified) {
-          const now = new Date().toISOString();
-          const starterProfile: StudentProfile = {
-            uid: firebaseUser.uid,
-            fullName: firebaseUser.displayName?.trim() || firebaseUser.email?.split('@')[0] || 'Student',
-            email: firebaseUser.email ?? '',
-            onboardingCompleted: false,
-            certificates: [],
-            createdAt: now,
-            updatedAt: now,
-          };
-          await saveProfile(starterProfile);
-          const persisted = await getProfile(firebaseUser.uid);
-          setProfile(persisted ?? starterProfile);
-        } else {
-          setProfile(null);
-        }
-
-        let resolvedRole: UserRoleRecord['role'] = 'student';
-        let resolvedStatus: 'active' | 'disabled' = 'active';
-        if (
-          firebaseUser.email?.toLowerCase() === BOOTSTRAP_ADMIN_EMAIL.toLowerCase() &&
-          firebaseUser.emailVerified
-        ) {
-          resolvedRole = 'super_admin';
-          resolvedStatus = 'active';
-        } else {
-          try {
-            const roleSnap = await getDoc(doc(db, 'user_roles', firebaseUser.uid));
-            if (roleSnap.exists()) {
-              const data = roleSnap.data() as UserRoleRecord;
-              resolvedStatus = data.status === 'disabled' ? 'disabled' : 'active';
-              resolvedRole =
-                resolvedStatus === 'disabled' ? 'student' : normalizeAppRole(data.role);
-            }
-          } catch (roleErr) {
-            if (isFirestoreOfflineError(roleErr)) {
-              try {
-                const token = await firebaseUser.getIdToken();
-                const restRole = await fetchFirestoreDocumentViaRest<UserRoleRecord>(
-                  'user_roles',
-                  firebaseUser.uid,
-                  token
-                );
-                if (restRole.exists && restRole.data) {
-                  resolvedStatus = restRole.data.status === 'disabled' ? 'disabled' : 'active';
-                  resolvedRole =
-                    resolvedStatus === 'disabled'
-                      ? 'student'
-                      : normalizeAppRole(restRole.data.role);
-                }
-              } catch {
-                resolvedRole = 'student';
-              }
-            } else {
-              resolvedRole = 'student';
-            }
-          }
-        }
-        setUserRole(resolvedRole);
-        setRoleStatus(resolvedStatus);
+        setProfile(resolvedProfile);
+        setUserRole(roleInfo.role);
+        setRoleStatus(roleInfo.status);
 
         if (
-          isPrivilegedRole(resolvedRole, resolvedStatus) &&
+          isPrivilegedRole(roleInfo.role, roleInfo.status) &&
           firebaseUser.emailVerified &&
           typeof window !== 'undefined' &&
           !window.sessionStorage.getItem('grantly_admin_auto_synced')
@@ -170,9 +188,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    testFirestoreConnection().then((res) => setFirestoreReachable(res.reachable));
-
     const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
+      ensureCacheOwner(firebaseUser?.uid ?? null);
       setUser(firebaseUser);
       await loadUserData(firebaseUser);
       setLoading(false);
@@ -197,12 +214,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signInWithGoogle = useCallback(async () => {
     const result = await signInWithPopup(auth, googleAuthProvider);
+    ensureCacheOwner(result.user.uid);
     await loadUserData(result.user);
     return result.user;
   }, [loadUserData]);
 
   const registerWithEmail = useCallback(async (fullName: string, email: string, password: string) => {
     const cred = await createUserWithEmailAndPassword(auth, email, password);
+    ensureCacheOwner(cred.user.uid);
     await updateProfile(cred.user, { displayName: fullName });
     try {
       await sendEmailVerification(cred.user);
@@ -215,6 +234,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const loginWithEmail = useCallback(
     async (email: string, password: string) => {
       const cred = await signInWithEmailAndPassword(auth, email, password);
+      ensureCacheOwner(cred.user.uid);
       await loadUserData(cred.user);
       return cred.user;
     },
@@ -233,6 +253,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const logout = useCallback(async () => {
+    inFlightLoadRef.current = null;
+    invalidateAllUserCaches(null);
     await signOut(auth);
     setUser(null);
     setProfile(null);
@@ -267,29 +289,46 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     Boolean(user?.emailVerified) &&
     (isSuperAdmin || isPrivilegedRole(userRole, roleStatus));
 
-  return (
-    <AuthContext.Provider
-      value={{
-        user,
-        profile,
-        userRole: isBootstrapSuperAdmin ? 'super_admin' : userRole,
-        isAdmin,
-        isSuperAdmin,
-        loading,
-        firestoreReachable,
-        signInWithGoogle,
-        registerWithEmail,
-        loginWithEmail,
-        resetPassword,
-        resendVerificationEmail,
-        logout,
-        refreshProfile,
-        getIdToken,
-      }}
-    >
-      {children}
-    </AuthContext.Provider>
+  const effectiveRole: UserRoleRecord['role'] = isBootstrapSuperAdmin ? 'super_admin' : userRole;
+
+  const contextValue = useMemo<AuthContextValue>(
+    () => ({
+      user,
+      profile,
+      userRole: effectiveRole,
+      isAdmin,
+      isSuperAdmin,
+      loading,
+      firestoreReachable,
+      signInWithGoogle,
+      registerWithEmail,
+      loginWithEmail,
+      resetPassword,
+      resendVerificationEmail,
+      logout,
+      refreshProfile,
+      getIdToken,
+    }),
+    [
+      user,
+      profile,
+      effectiveRole,
+      isAdmin,
+      isSuperAdmin,
+      loading,
+      firestoreReachable,
+      signInWithGoogle,
+      registerWithEmail,
+      loginWithEmail,
+      resetPassword,
+      resendVerificationEmail,
+      logout,
+      refreshProfile,
+      getIdToken,
+    ]
   );
+
+  return <AuthContext.Provider value={contextValue}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth(): AuthContextValue {

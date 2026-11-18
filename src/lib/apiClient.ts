@@ -1,3 +1,11 @@
+import {
+  DEFAULT_API_CACHE_TTL_MS,
+  getActiveCacheUid,
+  getOrFetchUser,
+  invalidatePublicCache,
+  invalidateUserCache,
+} from './workspaceCache.ts';
+
 export async function parseJsonApiResponse<TResponse>(response: Response): Promise<TResponse> {
   const contentType = (response.headers.get('content-type') || '').toLowerCase();
   const rawText = await response.text().catch(() => '');
@@ -36,6 +44,36 @@ export async function parseJsonApiResponse<TResponse>(response: Response): Promi
   return payload as TResponse;
 }
 
+function invalidateCachesForMutatingEndpoint(endpoint: string): void {
+  const uid = getActiveCacheUid();
+  if (endpoint.startsWith('/api/applications')) {
+    if (uid) {
+      invalidateUserCache(uid, 'applications');
+      invalidateUserCache(uid, 'application:');
+      invalidateUserCache(uid, 'application_events');
+      invalidateUserCache(uid, 'application_checklist_items');
+      invalidateUserCache(uid, 'notifications');
+    }
+  } else if (endpoint.startsWith('/api/notifications')) {
+    if (uid) {
+      invalidateUserCache(uid, 'notifications');
+      invalidateUserCache(uid, 'notification_preferences');
+      invalidateUserCache(uid, 'notification_delivery_logs');
+      invalidateUserCache(uid, 'api:/api/notifications');
+    }
+  } else if (endpoint.startsWith('/api/documents')) {
+    if (uid) {
+      invalidateUserCache(uid, 'documents');
+      invalidateUserCache(uid, 'document_analysis');
+    }
+  } else if (endpoint.startsWith('/api/admin')) {
+    invalidatePublicCache();
+    if (uid) {
+      invalidateUserCache(uid, 'api:/api/admin');
+    }
+  }
+}
+
 export async function getProtectedApi<TResponse>(
   endpoint: string,
   idToken: string
@@ -48,6 +86,23 @@ export async function getProtectedApi<TResponse>(
   });
 
   return parseJsonApiResponse<TResponse>(response);
+}
+
+export async function getCachedProtectedApi<TResponse>(
+  uid: string,
+  endpoint: string,
+  getIdTokenFn: () => Promise<string>,
+  ttlMs: number = DEFAULT_API_CACHE_TTL_MS
+): Promise<TResponse> {
+  return getOrFetchUser(
+    uid,
+    `api:${endpoint}`,
+    async () => {
+      const token = await getIdTokenFn();
+      return getProtectedApi<TResponse>(endpoint, token);
+    },
+    ttlMs
+  );
 }
 
 export async function postProtectedAi<TResponse>(
@@ -64,7 +119,9 @@ export async function postProtectedAi<TResponse>(
     body: JSON.stringify(body),
   });
 
-  return parseJsonApiResponse<TResponse>(response);
+  const data = await parseJsonApiResponse<TResponse>(response);
+  invalidateCachesForMutatingEndpoint(endpoint);
+  return data;
 }
 
 export async function putProtectedApi<TResponse>(
@@ -81,7 +138,9 @@ export async function putProtectedApi<TResponse>(
     body: JSON.stringify(body),
   });
 
-  return parseJsonApiResponse<TResponse>(response);
+  const data = await parseJsonApiResponse<TResponse>(response);
+  invalidateCachesForMutatingEndpoint(endpoint);
+  return data;
 }
 
 export async function patchProtectedApi<TResponse>(
@@ -98,7 +157,9 @@ export async function patchProtectedApi<TResponse>(
     body: JSON.stringify(body),
   });
 
-  return parseJsonApiResponse<TResponse>(response);
+  const data = await parseJsonApiResponse<TResponse>(response);
+  invalidateCachesForMutatingEndpoint(endpoint);
+  return data;
 }
 
 export async function fetchProtectedBlob(endpoint: string, idToken: string): Promise<Blob> {
@@ -126,4 +187,5 @@ export async function deleteProtected(endpoint: string, idToken: string): Promis
     const payload = await response.json().catch(() => ({}));
     throw new Error(payload?.error || `Delete request failed (${response.status})`);
   }
+  invalidateCachesForMutatingEndpoint(endpoint);
 }

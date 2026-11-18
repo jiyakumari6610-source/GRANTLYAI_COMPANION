@@ -50,6 +50,7 @@ import type {
   StudentProfile,
   TrustGuardDocumentAssessment,
 } from '../types/database.ts';
+import { peekPublicCache, peekUserCache } from '../lib/workspaceCache.ts';
 
 function formatDateTimeIst(iso?: string): string {
   if (!iso) return '—';
@@ -72,102 +73,128 @@ export default function ApplicationDetailPage() {
   const { user, profile: authProfile, getIdToken } = useAuth();
   const navigate = useNavigate();
 
-  const [application, setApplication] = useState<ApplicationRecord | null>(null);
-  const [scholarships, setScholarships] = useState<Scholarship[]>([]);
-  const [profile, setProfile] = useState<StudentProfile | null>(authProfile);
-  const [documents, setDocuments] = useState<DocumentRecord[]>([]);
-  const [analyses, setAnalyses] = useState<DocumentAnalysis[]>([]);
-  const [tgAssessment, setTgAssessment] = useState<TrustGuardDocumentAssessment | null>(null);
-  const [events, setEvents] = useState<ApplicationEventRecord[]>([]);
-  const [checklistItems, setChecklistItems] = useState<ApplicationChecklistItemRecord[]>([]);
+  const cachedSingleApp = id
+    ? peekUserCache<ApplicationRecord | null>(user?.uid, `application:${id}`)
+    : undefined;
+  const cachedAppList = peekUserCache<ApplicationRecord[]>(user?.uid, 'applications');
+  const initialApp =
+    cachedSingleApp ?? (id ? cachedAppList?.find((item) => item.id === id) ?? null : null);
+  const cachedSch = peekPublicCache<{ items: Scholarship[]; isEmptyDatabase: boolean }>('scholarships');
+  const cachedProfile = peekUserCache<StudentProfile | null>(user?.uid, 'profile');
+  const cachedDocs = peekUserCache<DocumentRecord[]>(user?.uid, 'documents');
+  const cachedAnalyses = peekUserCache<DocumentAnalysis[]>(user?.uid, 'document_analysis');
+  const cachedTg = peekUserCache<TrustGuardDocumentAssessment[]>(user?.uid, 'trustguard_assessments');
+  const cachedEvents = id
+    ? peekUserCache<ApplicationEventRecord[]>(user?.uid, `application_events:${id}`)
+    : undefined;
+  const cachedChecklist = id
+    ? peekUserCache<ApplicationChecklistItemRecord[]>(user?.uid, `application_checklist_items:${id}`)
+    : undefined;
 
-  const [loading, setLoading] = useState(true);
+  const hasWarmDetailCache = Boolean(
+    initialApp && initialApp.userId === user?.uid && cachedSch && cachedDocs && cachedAnalyses
+  );
+
+  const [application, setApplication] = useState<ApplicationRecord | null>(() =>
+    initialApp && initialApp.userId === user?.uid ? initialApp : null
+  );
+  const [scholarships, setScholarships] = useState<Scholarship[]>(() => cachedSch?.items ?? []);
+  const [profile, setProfile] = useState<StudentProfile | null>(
+    () => cachedProfile ?? authProfile
+  );
+  const [documents, setDocuments] = useState<DocumentRecord[]>(() => cachedDocs ?? []);
+  const [analyses, setAnalyses] = useState<DocumentAnalysis[]>(() => cachedAnalyses ?? []);
+  const [tgAssessment, setTgAssessment] = useState<TrustGuardDocumentAssessment | null>(
+    () => cachedTg?.[0] ?? null
+  );
+  const [events, setEvents] = useState<ApplicationEventRecord[]>(() => cachedEvents ?? []);
+  const [checklistItems, setChecklistItems] = useState<ApplicationChecklistItemRecord[]>(
+    () => cachedChecklist ?? []
+  );
+
+  const [loading, setLoading] = useState(!hasWarmDetailCache);
   const [accessError, setAccessError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   // Editable form state
-  const [refIdDraft, setRefIdDraft] = useState('');
-  const [deadlineDraft, setDeadlineDraft] = useState('');
-  const [notesDraft, setNotesDraft] = useState('');
-  const [correctionDraft, setCorrectionDraft] = useState('');
-  const [outcomeDraft, setOutcomeDraft] = useState('');
+  const [refIdDraft, setRefIdDraft] = useState(() => initialApp?.portalReferenceId || '');
+  const [deadlineDraft, setDeadlineDraft] = useState(() => initialApp?.deadline || '');
+  const [notesDraft, setNotesDraft] = useState(() => initialApp?.notes || '');
+  const [correctionDraft, setCorrectionDraft] = useState(() => initialApp?.correctionNotes || '');
+  const [outcomeDraft, setOutcomeDraft] = useState(() => initialApp?.finalOutcome || '');
 
   // Confirmation modal for status transitions
   const [pendingTransition, setPendingTransition] = useState<Phase8ApplicationStatus | null>(null);
   const [submissionConfirmedCheck, setSubmissionConfirmedCheck] = useState(false);
-  const [submissionDateDraft, setSubmissionDateDraft] = useState(() =>
-    new Date().toISOString().slice(0, 10)
+  const [submissionDateDraft, setSubmissionDateDraft] = useState(
+    () => initialApp?.submissionDate || new Date().toISOString().slice(0, 10)
   );
-  const [modalRefId, setModalRefId] = useState('');
+  const [modalRefId, setModalRefId] = useState(() => initialApp?.portalReferenceId || '');
   const [modalCorrectionNote, setModalCorrectionNote] = useState('');
   const [modalOutcomeNote, setModalOutcomeNote] = useState('');
 
   // External portal modal
   const [showPortalModal, setShowPortalModal] = useState(false);
 
-  const loadData = useCallback(async () => {
-    if (!user || !id) return;
-    setLoading(true);
-    setAccessError(null);
-    try {
-      const [
-        appRec,
-        schRes,
-        profRes,
-        docsRes,
-        anaRes,
-        tgRes,
-        evtRes,
-        chkRes,
-      ] = await Promise.all([
-        getApplicationById(id),
-        getScholarships(),
-        getProfile(user.uid),
-        getDocuments(user.uid),
-        getDocumentAnalyses(user.uid),
-        getTrustGuardAssessments(user.uid),
-        getApplicationEvents(user.uid, id),
-        getApplicationChecklistItems(user.uid, id),
-      ]);
-
-      if (!appRec) {
-        setAccessError('Tracked application not found.');
-        setApplication(null);
-        return;
+  const loadData = useCallback(
+    async (showSkeleton = false) => {
+      if (!user || !id) return;
+      if (showSkeleton) {
+        setLoading(true);
       }
-      if (appRec.userId !== user.uid) {
-        setAccessError('Access denied: this application belongs to another student account.');
-        setApplication(null);
-        return;
+      setAccessError(null);
+      try {
+        const [appRec, schRes, profRes, docsRes, anaRes, tgRes, evtRes, chkRes] = await Promise.all([
+          getApplicationById(id),
+          getScholarships(),
+          getProfile(user.uid),
+          getDocuments(user.uid),
+          getDocumentAnalyses(user.uid),
+          getTrustGuardAssessments(user.uid),
+          getApplicationEvents(user.uid, id),
+          getApplicationChecklistItems(user.uid, id),
+        ]);
+
+        if (!appRec) {
+          setAccessError('Tracked application not found.');
+          setApplication(null);
+          return;
+        }
+        if (appRec.userId !== user.uid) {
+          setAccessError('Access denied: this application belongs to another student account.');
+          setApplication(null);
+          return;
+        }
+
+        setApplication(appRec);
+        setScholarships(schRes.items);
+        setProfile(profRes ?? authProfile);
+        setDocuments(docsRes);
+        setAnalyses(anaRes);
+        setTgAssessment(tgRes[0] ?? null);
+        setEvents(evtRes);
+        setChecklistItems(chkRes);
+
+        setRefIdDraft(appRec.portalReferenceId || '');
+        setDeadlineDraft(appRec.deadline || '');
+        setNotesDraft(appRec.notes || '');
+        setCorrectionDraft(appRec.correctionNotes || '');
+        setOutcomeDraft(appRec.finalOutcome || '');
+        setModalRefId(appRec.portalReferenceId || '');
+        setSubmissionDateDraft(appRec.submissionDate || new Date().toISOString().slice(0, 10));
+      } catch (err) {
+        setAccessError(err instanceof Error ? err.message : 'Unable to load application details.');
+      } finally {
+        setLoading(false);
       }
-
-      setApplication(appRec);
-      setScholarships(schRes.items);
-      setProfile(profRes ?? authProfile);
-      setDocuments(docsRes);
-      setAnalyses(anaRes);
-      setTgAssessment(tgRes[0] ?? null);
-      setEvents(evtRes);
-      setChecklistItems(chkRes);
-
-      setRefIdDraft(appRec.portalReferenceId || '');
-      setDeadlineDraft(appRec.deadline || '');
-      setNotesDraft(appRec.notes || '');
-      setCorrectionDraft(appRec.correctionNotes || '');
-      setOutcomeDraft(appRec.finalOutcome || '');
-      setModalRefId(appRec.portalReferenceId || '');
-      setSubmissionDateDraft(appRec.submissionDate || new Date().toISOString().slice(0, 10));
-    } catch (err) {
-      setAccessError(err instanceof Error ? err.message : 'Unable to load application details.');
-    } finally {
-      setLoading(false);
-    }
-  }, [user, id, authProfile]);
+    },
+    [user, id, authProfile]
+  );
 
   useEffect(() => {
-    void loadData();
+    void loadData(false);
   }, [loadData]);
 
   const linkedScholarship = useMemo(() => {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import {
@@ -19,7 +19,11 @@ import {
   findDuplicateActiveApplication,
   normalizeApplicationStatus,
 } from '../lib/applicationTrackerEngine.ts';
-import { evaluateDeterministicEligibility } from '../lib/eligibilityEngine.ts';
+import {
+  evaluateDeterministicEligibility,
+  type EligibilityEvaluationResult,
+} from '../lib/eligibilityEngine.ts';
+import { peekPublicCache, peekUserCache } from '../lib/workspaceCache.ts';
 import {
   getApplications,
   getSavedScholarships,
@@ -74,15 +78,193 @@ const APPLICATION_STATUS_FILTERS = [
 
 const PAGE_SIZE = 8;
 
+interface DiscoveryScholarshipCardProps {
+  scholarship: Scholarship;
+  effectiveStatus: string;
+  isSaved: boolean;
+  eligibility: EligibilityEvaluationResult;
+  activeTracked: ApplicationRecord | undefined;
+  isTrackingBusy: boolean;
+  onToggleSave: (id: string) => void;
+  onTrack: (id: string) => void;
+}
+
+const DiscoveryScholarshipCard = memo(function DiscoveryScholarshipCard({
+  scholarship,
+  effectiveStatus,
+  isSaved,
+  eligibility,
+  activeTracked,
+  isTrackingBusy,
+  onToggleSave,
+  onTrack,
+}: DiscoveryScholarshipCardProps) {
+  const isInactive = effectiveStatus === 'Expired' || effectiveStatus === 'Closed';
+
+  return (
+    <article
+      className={`surface-card surface-interactive rounded-2xl p-6 flex flex-col justify-between gap-5 ${
+        isInactive ? 'opacity-80' : ''
+      }`}
+    >
+      <div className="space-y-3">
+        <div className="flex items-start justify-between gap-2 text-xs">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-slate-400">
+            <span className="font-medium text-slate-200">{scholarship.scholarshipType}</span>
+            <span aria-hidden="true">·</span>
+            <span
+              className={
+                scholarship.verificationStatus === 'Verified' ||
+                scholarship.verificationStatus === 'Verified Official Source'
+                  ? 'text-emerald-400 font-medium'
+                  : 'text-amber-300 font-medium'
+              }
+            >
+              {scholarship.verificationStatus}
+            </span>
+            <span aria-hidden="true">·</span>
+            <span
+              className={
+                effectiveStatus === 'Currently accepting applications'
+                  ? 'text-emerald-400 font-medium'
+                  : isInactive
+                    ? 'text-rose-400 font-semibold'
+                    : 'text-slate-300'
+              }
+            >
+              {effectiveStatus}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => onToggleSave(scholarship.id)}
+            aria-label={isSaved ? 'Unsave scholarship' : 'Save scholarship'}
+            className={`p-1.5 rounded-lg border shrink-0 transition-colors ${
+              isSaved
+                ? 'bg-indigo-500/20 border-indigo-400/40 text-indigo-300'
+                : 'bg-slate-900/70 border-slate-700 text-slate-400 hover:text-white'
+            }`}
+          >
+            <Bookmark className="w-4 h-4" fill={isSaved ? 'currentColor' : 'none'} />
+          </button>
+        </div>
+
+        <div>
+          <Link
+            to={`/scholarships/${scholarship.id}`}
+            className="text-base font-semibold text-white hover:text-indigo-300 leading-snug font-display transition-colors"
+          >
+            {scholarship.title}
+          </Link>
+          <p className="text-xs text-slate-400 mt-1">{scholarship.provider}</p>
+        </div>
+
+        <p className="text-sm text-slate-300 leading-relaxed line-clamp-3">
+          {scholarship.financialBenefitsText || scholarship.benefitsSummary || scholarship.description}
+        </p>
+
+        <div className="text-xs text-slate-400 flex flex-wrap gap-x-3 gap-y-1">
+          <span>
+            Income Cap:{' '}
+            <strong className="font-mono-num text-slate-200">
+              {typeof scholarship.incomeLimitInr === 'number'
+                ? `₹${scholarship.incomeLimitInr.toLocaleString('en-IN')}`
+                : 'None specified'}
+            </strong>
+          </span>
+          <span aria-hidden="true">·</span>
+          <span>
+            Profile Match:{' '}
+            <strong
+              className={
+                eligibility.overallStatus === 'Eligible'
+                  ? 'text-emerald-400'
+                  : eligibility.overallStatus === 'Potentially Eligible'
+                    ? 'text-amber-300'
+                    : eligibility.overallStatus === 'Insufficient Information'
+                      ? 'text-slate-200'
+                      : eligibility.overallStatus === 'Scholarship Status Unverified'
+                        ? 'text-amber-300'
+                        : 'text-rose-400'
+              }
+            >
+              {eligibility.overallStatus}
+            </strong>{' '}
+            <span className="font-mono-num text-slate-400">({eligibility.compatibilityScore}%)</span>
+          </span>
+        </div>
+      </div>
+
+      <div className="pt-4 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-3 text-xs">
+        <div className="min-w-0">
+          <span className="font-mono-num font-semibold text-indigo-200">
+            {scholarship.annualAwardInr
+              ? `₹${scholarship.annualAwardInr.toLocaleString('en-IN')}/yr`
+              : 'Variable Grant'}
+          </span>
+          <span className="text-slate-600 mx-1.5">·</span>
+          <span className="text-slate-400">
+            Deadline: {scholarship.applicationDeadline || 'Check Official Portal'}
+          </span>
+        </div>
+
+        <div className="flex items-center gap-3 shrink-0">
+          {activeTracked ? (
+            <Link
+              to={`/applications/${activeTracked.id}`}
+              className="font-semibold text-emerald-400 hover:underline inline-flex items-center gap-1 whitespace-nowrap"
+            >
+              <ClipboardCheck className="w-3.5 h-3.5" />
+              <span>Tracked ({normalizeApplicationStatus(activeTracked.status)})</span>
+            </Link>
+          ) : (
+            <button
+              type="button"
+              disabled={isTrackingBusy}
+              onClick={() => onTrack(scholarship.id)}
+              className="font-semibold text-slate-200 hover:text-indigo-300 inline-flex items-center gap-1 whitespace-nowrap disabled:opacity-50"
+            >
+              <ClipboardCheck className="w-3.5 h-3.5" />
+              <span>{isTrackingBusy ? 'Adding...' : 'Track'}</span>
+            </button>
+          )}
+          <Link
+            to={`/scholarships/${scholarship.id}`}
+            className="font-semibold text-slate-300 hover:text-white whitespace-nowrap"
+          >
+            Details
+          </Link>
+          <a
+            href={scholarship.officialUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-semibold text-indigo-300 hover:text-indigo-200 hover:underline inline-flex items-center gap-1 whitespace-nowrap"
+          >
+            <span>Apply Now</span>
+            <ExternalLink className="w-3 h-3" />
+          </a>
+        </div>
+      </div>
+    </article>
+  );
+});
+
 export default function DiscoveryPage() {
   const { user, profile, isAdmin, getIdToken } = useAuth();
   const navigate = useNavigate();
-  const [scholarships, setScholarships] = useState<Scholarship[]>([]);
-  const [saved, setSaved] = useState<SavedScholarship[]>([]);
-  const [applications, setApplications] = useState<ApplicationRecord[]>([]);
+  const cachedSch = peekPublicCache<{ items: Scholarship[]; isEmptyDatabase: boolean }>('scholarships');
+  const cachedSaved = peekUserCache<SavedScholarship[]>(user?.uid, 'saved_scholarships');
+  const cachedApps = peekUserCache<ApplicationRecord[]>(user?.uid, 'applications');
+  const hasWarmCache = Boolean(cachedSch && (!user || (cachedSaved && cachedApps)));
+
+  const [scholarships, setScholarships] = useState<Scholarship[]>(() => cachedSch?.items ?? []);
+  const [saved, setSaved] = useState<SavedScholarship[]>(() => cachedSaved ?? []);
+  const [applications, setApplications] = useState<ApplicationRecord[]>(() => cachedApps ?? []);
   const [trackingBusyId, setTrackingBusyId] = useState<string | null>(null);
-  const [isEmptyDatabase, setIsEmptyDatabase] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [isEmptyDatabase, setIsEmptyDatabase] = useState<boolean>(
+    () => cachedSch?.isEmptyDatabase ?? false
+  );
+  const [loading, setLoading] = useState(!hasWarmCache);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(true);
@@ -91,7 +273,7 @@ export default function DiscoveryPage() {
   const [sortBy, setSortBy] = useState<SortOption>('relevant');
   const [page, setPage] = useState(1);
 
-  const fetchDiscoveryData = async () => {
+  const fetchDiscoveryData = useCallback(async () => {
     setError(null);
     const [schRes, savedItems, appsItems] = await Promise.all([
       getScholarships(),
@@ -102,34 +284,23 @@ export default function DiscoveryPage() {
     setIsEmptyDatabase(schRes.isEmptyDatabase);
     setSaved(savedItems);
     setApplications(appsItems);
-  };
+  }, [user]);
 
   useEffect(() => {
     let active = true;
-    (async () => {
-      try {
-        const [schRes, savedItems, appsItems] = await Promise.all([
-          getScholarships(),
-          user ? getSavedScholarships(user.uid) : Promise.resolve([]),
-          user ? getApplications(user.uid) : Promise.resolve([]),
-        ]);
-        if (!active) return;
-        setScholarships(schRes.items);
-        setIsEmptyDatabase(schRes.isEmptyDatabase);
-        setSaved(savedItems);
-        setApplications(appsItems);
-      } catch (err) {
+    fetchDiscoveryData()
+      .catch((err) => {
         if (active) {
           setError(err instanceof Error ? err.message : 'Unable to query scholarship database.');
         }
-      } finally {
+      })
+      .finally(() => {
         if (active) setLoading(false);
-      }
-    })();
+      });
     return () => {
       active = false;
     };
-  }, [user]);
+  }, [fetchDiscoveryData]);
 
   const savedMap = useMemo(() => {
     const map = new Map<string, string>();
@@ -138,6 +309,22 @@ export default function DiscoveryPage() {
   }, [saved]);
 
   const savedIdSet = useMemo(() => new Set(savedMap.keys()), [savedMap]);
+
+  const eligibilityMap = useMemo(() => {
+    const map = new Map<string, EligibilityEvaluationResult>();
+    for (const s of scholarships) {
+      map.set(s.id, evaluateDeterministicEligibility(profile, s));
+    }
+    return map;
+  }, [scholarships, profile]);
+
+  const activeTrackedMap = useMemo(() => {
+    const map = new Map<string, ApplicationRecord | undefined>();
+    for (const s of scholarships) {
+      map.set(s.id, findDuplicateActiveApplication(applications, s.id) ?? undefined);
+    }
+    return map;
+  }, [scholarships, applications]);
 
   const results = useMemo(
     () => filterAndSortScholarships(scholarships, filters, sortBy, profile, savedIdSet),
@@ -155,38 +342,44 @@ export default function DiscoveryPage() {
     setPage(1);
   }, [filters, sortBy]);
 
-  const handleToggleSave = async (scholarshipId: string) => {
-    if (!user) return;
-    const existingId = savedMap.get(scholarshipId);
-    await toggleSavedScholarship(user.uid, scholarshipId, existingId);
-    const updated = await getSavedScholarships(user.uid);
-    setSaved(updated);
-  };
+  const handleToggleSave = useCallback(
+    async (scholarshipId: string) => {
+      if (!user) return;
+      const existingId = savedMap.get(scholarshipId);
+      await toggleSavedScholarship(user.uid, scholarshipId, existingId);
+      const updated = await getSavedScholarships(user.uid);
+      setSaved(updated);
+    },
+    [user, savedMap]
+  );
 
-  const handleTrackFromDiscovery = async (scholarshipId: string) => {
-    if (!user) return;
-    const activeApp = findDuplicateActiveApplication(applications, scholarshipId);
-    if (activeApp) {
-      navigate(`/applications/${activeApp.id}`);
-      return;
-    }
-    setTrackingBusyId(scholarshipId);
-    setError(null);
-    try {
-      const token = await getIdToken();
-      const res = await postProtectedAi<{ application: ApplicationRecord }>(
-        '/api/applications',
-        token,
-        { scholarshipId, initialStatus: 'Interested' }
-      );
-      setApplications((prev) => [res.application, ...prev]);
-      navigate(`/applications/${res.application.id}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to add scholarship to tracker.');
-    } finally {
-      setTrackingBusyId(null);
-    }
-  };
+  const handleTrackFromDiscovery = useCallback(
+    async (scholarshipId: string) => {
+      if (!user) return;
+      const activeApp = activeTrackedMap.get(scholarshipId);
+      if (activeApp) {
+        navigate(`/applications/${activeApp.id}`);
+        return;
+      }
+      setTrackingBusyId(scholarshipId);
+      setError(null);
+      try {
+        const token = await getIdToken();
+        const res = await postProtectedAi<{ application: ApplicationRecord }>(
+          '/api/applications',
+          token,
+          { scholarshipId, initialStatus: 'Interested' }
+        );
+        setApplications((prev) => [res.application, ...prev]);
+        navigate(`/applications/${res.application.id}`);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Unable to add scholarship to tracker.');
+      } finally {
+        setTrackingBusyId(null);
+      }
+    },
+    [user, activeTrackedMap, getIdToken, navigate]
+  );
 
   const handleAdminSyncNow = async () => {
     if (!isAdmin) return;
@@ -225,9 +418,25 @@ export default function DiscoveryPage() {
     >
       <PageTransition className="space-y-6">
         {error && (
-          <div className="p-4 rounded-2xl bg-rose-500/15 border border-rose-500/30 text-sm text-rose-200 flex items-start gap-2.5">
-            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
-            <span>{error}</span>
+          <div className="p-4 rounded-2xl bg-rose-500/15 border border-rose-500/30 text-sm text-rose-200 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-start gap-2.5">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
+              <span>{error}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setLoading(true);
+                void fetchDiscoveryData()
+                  .catch((err) =>
+                    setError(err instanceof Error ? err.message : 'Unable to query scholarship database.')
+                  )
+                  .finally(() => setLoading(false));
+              }}
+              className="px-3 py-1.5 text-xs font-semibold text-rose-100 bg-rose-500/25 hover:bg-rose-500/35 border border-rose-400/30 rounded-lg whitespace-nowrap"
+            >
+              Retry
+            </button>
           </div>
         )}
 
@@ -533,162 +742,22 @@ export default function DiscoveryPage() {
         ) : (
           <div className="space-y-6">
             <div className="grid md:grid-cols-2 gap-5">
-              {paginatedResults.map(({ scholarship, effectiveStatus }) => {
-                const isSaved = savedMap.has(scholarship.id);
-                const eligibility = evaluateDeterministicEligibility(profile, scholarship);
-                const isInactive = effectiveStatus === 'Expired' || effectiveStatus === 'Closed';
-                const activeTracked = findDuplicateActiveApplication(applications, scholarship.id);
-
-                return (
-                  <article
-                    key={scholarship.id}
-                    className={`surface-card surface-interactive rounded-2xl p-6 flex flex-col justify-between gap-5 ${
-                      isInactive ? 'opacity-80' : ''
-                    }`}
-                  >
-                    <div className="space-y-3">
-                      <div className="flex items-start justify-between gap-2 text-xs">
-                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-slate-400">
-                          <span className="font-medium text-slate-200">{scholarship.scholarshipType}</span>
-                          <span aria-hidden="true">·</span>
-                          <span
-                            className={
-                              scholarship.verificationStatus === 'Verified' ||
-                              scholarship.verificationStatus === 'Verified Official Source'
-                                ? 'text-emerald-400 font-medium'
-                                : 'text-amber-300 font-medium'
-                            }
-                          >
-                            {scholarship.verificationStatus}
-                          </span>
-                          <span aria-hidden="true">·</span>
-                          <span
-                            className={
-                              effectiveStatus === 'Currently accepting applications'
-                                ? 'text-emerald-400 font-medium'
-                                : isInactive
-                                  ? 'text-rose-400 font-semibold'
-                                  : 'text-slate-300'
-                            }
-                          >
-                            {effectiveStatus}
-                          </span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => handleToggleSave(scholarship.id)}
-                          aria-label={isSaved ? 'Unsave scholarship' : 'Save scholarship'}
-                          className={`p-1.5 rounded-lg border shrink-0 transition-colors ${
-                            isSaved
-                              ? 'bg-indigo-500/20 border-indigo-400/40 text-indigo-300'
-                              : 'bg-slate-900/70 border-slate-700 text-slate-400 hover:text-white'
-                          }`}
-                        >
-                          <Bookmark className="w-4 h-4" fill={isSaved ? 'currentColor' : 'none'} />
-                        </button>
-                      </div>
-
-                      <div>
-                        <Link
-                          to={`/scholarships/${scholarship.id}`}
-                          className="text-base font-semibold text-white hover:text-indigo-300 leading-snug font-display transition-colors"
-                        >
-                          {scholarship.title}
-                        </Link>
-                        <p className="text-xs text-slate-400 mt-1">{scholarship.provider}</p>
-                      </div>
-
-                      <p className="text-sm text-slate-300 leading-relaxed line-clamp-3">
-                        {scholarship.financialBenefitsText || scholarship.benefitsSummary || scholarship.description}
-                      </p>
-
-                      <div className="text-xs text-slate-400 flex flex-wrap gap-x-3 gap-y-1">
-                        <span>
-                          Income Cap:{' '}
-                          <strong className="font-mono-num text-slate-200">
-                            {typeof scholarship.incomeLimitInr === 'number'
-                              ? `₹${scholarship.incomeLimitInr.toLocaleString('en-IN')}`
-                              : 'None specified'}
-                          </strong>
-                        </span>
-                        <span aria-hidden="true">·</span>
-                        <span>
-                          Profile Match:{' '}
-                          <strong
-                            className={
-                              eligibility.overallStatus === 'Eligible'
-                                ? 'text-emerald-400'
-                                : eligibility.overallStatus === 'Potentially Eligible'
-                                  ? 'text-amber-300'
-                                  : eligibility.overallStatus === 'Insufficient Information'
-                                    ? 'text-slate-200'
-                                    : eligibility.overallStatus === 'Scholarship Status Unverified'
-                                      ? 'text-amber-300'
-                                      : 'text-rose-400'
-                            }
-                          >
-                            {eligibility.overallStatus}
-                          </strong>{' '}
-                          <span className="font-mono-num text-slate-400">
-                            ({eligibility.compatibilityScore}%)
-                          </span>
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="pt-4 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-3 text-xs">
-                      <div className="min-w-0">
-                        <span className="font-mono-num font-semibold text-indigo-200">
-                          {scholarship.annualAwardInr
-                            ? `₹${scholarship.annualAwardInr.toLocaleString('en-IN')}/yr`
-                            : 'Variable Grant'}
-                        </span>
-                        <span className="text-slate-600 mx-1.5">·</span>
-                        <span className="text-slate-400">
-                          Deadline: {scholarship.applicationDeadline || 'Check Official Portal'}
-                        </span>
-                      </div>
-
-                      <div className="flex items-center gap-3 shrink-0">
-                        {activeTracked ? (
-                          <Link
-                            to={`/applications/${activeTracked.id}`}
-                            className="font-semibold text-emerald-400 hover:underline inline-flex items-center gap-1 whitespace-nowrap"
-                          >
-                            <ClipboardCheck className="w-3.5 h-3.5" />
-                            <span>Tracked ({normalizeApplicationStatus(activeTracked.status)})</span>
-                          </Link>
-                        ) : (
-                          <button
-                            type="button"
-                            disabled={trackingBusyId === scholarship.id}
-                            onClick={() => void handleTrackFromDiscovery(scholarship.id)}
-                            className="font-semibold text-slate-200 hover:text-indigo-300 inline-flex items-center gap-1 whitespace-nowrap disabled:opacity-50"
-                          >
-                            <ClipboardCheck className="w-3.5 h-3.5" />
-                            <span>{trackingBusyId === scholarship.id ? 'Adding...' : 'Track'}</span>
-                          </button>
-                        )}
-                        <Link
-                          to={`/scholarships/${scholarship.id}`}
-                          className="font-semibold text-slate-300 hover:text-white whitespace-nowrap"
-                        >
-                          Details
-                        </Link>
-                        <a
-                          href={scholarship.officialUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="font-semibold text-indigo-300 hover:text-indigo-200 hover:underline inline-flex items-center gap-1 whitespace-nowrap"
-                        >
-                          <span>Apply Now</span>
-                          <ExternalLink className="w-3 h-3" />
-                        </a>
-                      </div>
-                    </div>
-                  </article>
-                );
-              })}
+              {paginatedResults.map(({ scholarship, effectiveStatus }) => (
+                <DiscoveryScholarshipCard
+                  key={scholarship.id}
+                  scholarship={scholarship}
+                  effectiveStatus={effectiveStatus}
+                  isSaved={savedMap.has(scholarship.id)}
+                  eligibility={
+                    eligibilityMap.get(scholarship.id) ??
+                    evaluateDeterministicEligibility(profile, scholarship)
+                  }
+                  activeTracked={activeTrackedMap.get(scholarship.id)}
+                  isTrackingBusy={trackingBusyId === scholarship.id}
+                  onToggleSave={(id) => void handleToggleSave(id)}
+                  onTrack={(id) => void handleTrackFromDiscovery(id)}
+                />
+              ))}
             </div>
 
             {totalPages > 1 && (

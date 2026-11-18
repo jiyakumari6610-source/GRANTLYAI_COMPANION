@@ -26,6 +26,16 @@ import {
   OperationType,
   recoverFirestoreNetwork,
 } from './firebase.ts';
+import {
+  DEFAULT_PUBLIC_CACHE_TTL_MS,
+  DEFAULT_USER_CACHE_TTL_MS,
+  getActiveCacheUid,
+  getOrFetchPublic,
+  getOrFetchUser,
+  invalidatePublicCache,
+  invalidateUserCache,
+  peekPublicCache,
+} from './workspaceCache.ts';
 import type {
   AdminAnnouncementRecord,
   AIConversation,
@@ -93,25 +103,27 @@ async function withFirestoreOfflineRetry<T>(
 
 // 1. Profiles
 export async function getProfile(uid: string): Promise<StudentProfile | null> {
-  try {
-    const snap = await withFirestoreOfflineRetry(() => getDoc(doc(db, 'profiles', uid)));
-    return snap.exists() ? (snap.data() as StudentProfile) : null;
-  } catch (error) {
-    if (isFirestoreOfflineError(error) && auth.currentUser?.uid === uid) {
-      try {
-        const idToken = await auth.currentUser.getIdToken();
-        const restResult = await fetchFirestoreDocumentViaRest<StudentProfile>(
-          'profiles',
-          uid,
-          idToken
-        );
-        return restResult.exists ? restResult.data : null;
-      } catch {
-        // Fall through to structured Firestore error reporting if REST fallback also fails
+  return getOrFetchUser(uid, 'profile', async () => {
+    try {
+      const snap = await withFirestoreOfflineRetry(() => getDoc(doc(db, 'profiles', uid)));
+      return snap.exists() ? (snap.data() as StudentProfile) : null;
+    } catch (error) {
+      if (isFirestoreOfflineError(error) && auth.currentUser?.uid === uid) {
+        try {
+          const idToken = await auth.currentUser.getIdToken();
+          const restResult = await fetchFirestoreDocumentViaRest<StudentProfile>(
+            'profiles',
+            uid,
+            idToken
+          );
+          return restResult.exists ? restResult.data : null;
+        } catch {
+          // Fall through to structured Firestore error reporting if REST fallback also fails
+        }
       }
+      handleFirestoreError(error, OperationType.GET, `profiles/${uid}`);
     }
-    handleFirestoreError(error, OperationType.GET, `profiles/${uid}`);
-  }
+  });
 }
 
 export async function saveProfile(profile: StudentProfile): Promise<void> {
@@ -130,6 +142,7 @@ export async function saveProfile(profile: StudentProfile): Promise<void> {
     } else {
       await setDoc(ref, profile);
     }
+    invalidateUserCache(profile.uid, 'profile');
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
@@ -141,30 +154,50 @@ export async function getScholarships(): Promise<{
   isEmptyDatabase: boolean;
   error?: string;
 }> {
-  try {
-    const snap = await withFirestoreOfflineRetry(() => getDocs(collection(db, 'scholarships')));
-    if (snap.empty) {
-      return { items: [], isEmptyDatabase: true };
-    }
-    const items = snap.docs.map((d) => d.data() as Scholarship);
-    return { items, isEmptyDatabase: false };
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, 'scholarships');
-  }
+  return getOrFetchPublic(
+    'scholarships',
+    async () => {
+      try {
+        const snap = await withFirestoreOfflineRetry(() => getDocs(collection(db, 'scholarships')));
+        if (snap.empty) {
+          return { items: [], isEmptyDatabase: true };
+        }
+        const items = snap.docs.map((d) => d.data() as Scholarship);
+        return { items, isEmptyDatabase: false };
+      } catch (error) {
+        handleFirestoreError(error, OperationType.LIST, 'scholarships');
+      }
+    },
+    DEFAULT_PUBLIC_CACHE_TTL_MS
+  );
 }
 
 export async function getScholarshipById(id: string): Promise<Scholarship | null> {
-  try {
-    const snap = await withFirestoreOfflineRetry(() => getDoc(doc(db, 'scholarships', id)));
-    return snap.exists() ? (snap.data() as Scholarship) : null;
-  } catch (error) {
-    handleFirestoreError(error, OperationType.GET, `scholarships/${id}`);
+  const cachedCatalog = peekPublicCache<{ items: Scholarship[]; isEmptyDatabase: boolean }>('scholarships');
+  if (cachedCatalog) {
+    const found = cachedCatalog.items.find((item) => item.id === id);
+    if (found) return found;
   }
+
+  return getOrFetchPublic(
+    `scholarship:${id}`,
+    async () => {
+      try {
+        const snap = await withFirestoreOfflineRetry(() => getDoc(doc(db, 'scholarships', id)));
+        return snap.exists() ? (snap.data() as Scholarship) : null;
+      } catch (error) {
+        handleFirestoreError(error, OperationType.GET, `scholarships/${id}`);
+      }
+    },
+    DEFAULT_PUBLIC_CACHE_TTL_MS
+  );
 }
 
 export async function upsertScholarship(scholarship: Scholarship): Promise<void> {
   try {
     await setDoc(doc(db, 'scholarships', scholarship.id), scholarship);
+    invalidatePublicCache('scholarships');
+    invalidatePublicCache(`scholarship:${scholarship.id}`);
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `scholarships/${scholarship.id}`);
   }
@@ -173,6 +206,8 @@ export async function upsertScholarship(scholarship: Scholarship): Promise<void>
 export async function deleteScholarship(id: string): Promise<void> {
   try {
     await deleteDoc(doc(db, 'scholarships', id));
+    invalidatePublicCache('scholarships');
+    invalidatePublicCache(`scholarship:${id}`);
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `scholarships/${id}`);
   }
@@ -185,6 +220,8 @@ export async function seedVerifiedScholarships(): Promise<number> {
       batch.set(doc(db, 'scholarships', item.id), item);
     });
     await batch.commit();
+    invalidatePublicCache('scholarships');
+    invalidatePublicCache('scholarship:');
     return VERIFIED_INDIAN_SCHOLARSHIPS.length;
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, 'scholarships');
@@ -194,43 +231,62 @@ export async function seedVerifiedScholarships(): Promise<number> {
 export async function getScholarshipEligibilityRules(
   scholarshipId?: string
 ): Promise<ScholarshipEligibilityRule[]> {
-  try {
-    const q = scholarshipId
-      ? query(collection(db, 'scholarship_eligibility_rules'), where('scholarshipId', '==', scholarshipId))
-      : collection(db, 'scholarship_eligibility_rules');
-    const snap = await withFirestoreOfflineRetry(() => getDocs(q));
-    return snap.docs.map((d) => d.data() as ScholarshipEligibilityRule);
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, 'scholarship_eligibility_rules');
-  }
+  const allRules = await getOrFetchPublic(
+    'scholarship_eligibility_rules',
+    async () => {
+      try {
+        const snap = await withFirestoreOfflineRetry(() =>
+          getDocs(collection(db, 'scholarship_eligibility_rules'))
+        );
+        return snap.docs.map((d) => d.data() as ScholarshipEligibilityRule);
+      } catch (error) {
+        handleFirestoreError(error, OperationType.LIST, 'scholarship_eligibility_rules');
+      }
+    },
+    DEFAULT_PUBLIC_CACHE_TTL_MS
+  );
+  return scholarshipId ? allRules.filter((r) => r.scholarshipId === scholarshipId) : allRules;
 }
 
 export async function getScholarshipRuleVersions(
   scholarshipId: string
 ): Promise<ScholarshipRuleVersionRecord[]> {
-  try {
-    const q = query(
-      collection(db, 'scholarship_rule_versions'),
-      where('scholarshipId', '==', scholarshipId)
-    );
-    const snap = await withFirestoreOfflineRetry(() => getDocs(q));
-    return snap.docs
-      .map((d) => d.data() as ScholarshipRuleVersionRecord)
-      .sort((a, b) => b.versionNumber - a.versionNumber);
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, 'scholarship_rule_versions');
-  }
+  return getOrFetchPublic(
+    `scholarship_rule_versions:${scholarshipId}`,
+    async () => {
+      try {
+        const q = query(
+          collection(db, 'scholarship_rule_versions'),
+          where('scholarshipId', '==', scholarshipId)
+        );
+        const snap = await withFirestoreOfflineRetry(() => getDocs(q));
+        return snap.docs
+          .map((d) => d.data() as ScholarshipRuleVersionRecord)
+          .sort((a, b) => b.versionNumber - a.versionNumber);
+      } catch (error) {
+        handleFirestoreError(error, OperationType.LIST, 'scholarship_rule_versions');
+      }
+    },
+    DEFAULT_PUBLIC_CACHE_TTL_MS
+  );
 }
 
 // 3. Saved Scholarships
 export async function getSavedScholarships(userId: string): Promise<SavedScholarship[]> {
-  try {
-    const q = query(collection(db, 'saved_scholarships'), where('userId', '==', userId));
-    const snap = await withFirestoreOfflineRetry(() => getDocs(q));
-    return snap.docs.map((d) => d.data() as SavedScholarship);
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, 'saved_scholarships');
-  }
+  return getOrFetchUser(
+    userId,
+    'saved_scholarships',
+    async () => {
+      try {
+        const q = query(collection(db, 'saved_scholarships'), where('userId', '==', userId));
+        const snap = await withFirestoreOfflineRetry(() => getDocs(q));
+        return snap.docs.map((d) => d.data() as SavedScholarship);
+      } catch (error) {
+        handleFirestoreError(error, OperationType.LIST, 'saved_scholarships');
+      }
+    },
+    DEFAULT_USER_CACHE_TTL_MS
+  );
 }
 
 export async function toggleSavedScholarship(
@@ -241,6 +297,7 @@ export async function toggleSavedScholarship(
   try {
     if (currentlySavedId) {
       await deleteDoc(doc(db, 'saved_scholarships', currentlySavedId));
+      invalidateUserCache(userId, 'saved_scholarships');
       return false;
     }
     const id = `${userId}_${scholarshipId}`;
@@ -248,6 +305,7 @@ export async function toggleSavedScholarship(
     const existingSnap = await withFirestoreOfflineRetry(() => getDoc(ref));
     if (existingSnap.exists()) {
       await deleteDoc(ref);
+      invalidateUserCache(userId, 'saved_scholarships');
       return false;
     }
     const record: SavedScholarship = {
@@ -257,6 +315,7 @@ export async function toggleSavedScholarship(
       createdAt: new Date().toISOString(),
     };
     await setDoc(ref, record);
+    invalidateUserCache(userId, 'saved_scholarships');
     return true;
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, 'saved_scholarships');
@@ -265,30 +324,44 @@ export async function toggleSavedScholarship(
 
 // 4. Applications, Events & Checklists
 export async function getApplications(userId: string): Promise<ApplicationRecord[]> {
-  try {
-    const q = query(collection(db, 'applications'), where('userId', '==', userId));
-    const snap = await withFirestoreOfflineRetry(() => getDocs(q));
-    return snap.docs
-      .map((d) => d.data() as ApplicationRecord)
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, 'applications');
-  }
+  return getOrFetchUser(
+    userId,
+    'applications',
+    async () => {
+      try {
+        const q = query(collection(db, 'applications'), where('userId', '==', userId));
+        const snap = await withFirestoreOfflineRetry(() => getDocs(q));
+        return snap.docs
+          .map((d) => d.data() as ApplicationRecord)
+          .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.LIST, 'applications');
+      }
+    },
+    DEFAULT_USER_CACHE_TTL_MS
+  );
 }
 
 export async function getApplicationById(id: string): Promise<ApplicationRecord | null> {
-  try {
-    const snap = await withFirestoreOfflineRetry(() => getDoc(doc(db, 'applications', id)));
-    return snap.exists() ? (snap.data() as ApplicationRecord) : null;
-  } catch (error) {
-    handleFirestoreError(error, OperationType.GET, `applications/${id}`);
-  }
+  const uid = auth.currentUser?.uid ?? getActiveCacheUid();
+  const fetcher = async () => {
+    try {
+      const snap = await withFirestoreOfflineRetry(() => getDoc(doc(db, 'applications', id)));
+      return snap.exists() ? (snap.data() as ApplicationRecord) : null;
+    } catch (error) {
+      handleFirestoreError(error, OperationType.GET, `applications/${id}`);
+    }
+  };
+  if (!uid) return fetcher();
+  return getOrFetchUser(uid, `application:${id}`, fetcher, DEFAULT_USER_CACHE_TTL_MS);
 }
 
 export async function upsertApplication(appRecord: ApplicationRecord): Promise<void> {
   try {
     const clean = stripUndefinedDeep(appRecord);
     await setDoc(doc(db, 'applications', appRecord.id), clean);
+    invalidateUserCache(appRecord.userId, 'applications');
+    invalidateUserCache(appRecord.userId, `application:${appRecord.id}`);
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `applications/${appRecord.id}`);
   }
@@ -316,6 +389,9 @@ export async function updateApplicationFields(
   try {
     const clean = stripUndefinedDeep(fields);
     await updateDoc(doc(db, 'applications', id), clean);
+    const uid = auth.currentUser?.uid ?? getActiveCacheUid();
+    invalidateUserCache(uid, 'applications');
+    invalidateUserCache(uid, `application:${id}`);
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `applications/${id}`);
   }
@@ -324,6 +400,9 @@ export async function updateApplicationFields(
 export async function deleteApplication(id: string): Promise<void> {
   try {
     await deleteDoc(doc(db, 'applications', id));
+    const uid = auth.currentUser?.uid ?? getActiveCacheUid();
+    invalidateUserCache(uid, 'applications');
+    invalidateUserCache(uid, `application:${id}`);
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `applications/${id}`);
   }
@@ -333,23 +412,30 @@ export async function getApplicationEvents(
   userId: string,
   applicationId?: string
 ): Promise<ApplicationEventRecord[]> {
-  try {
-    const q = query(collection(db, 'application_events'), where('userId', '==', userId));
-    const snap = await withFirestoreOfflineRetry(() => getDocs(q));
-    const items = snap.docs.map((d) => d.data() as ApplicationEventRecord);
-    const filtered = applicationId
-      ? items.filter((item) => item.applicationId === applicationId)
-      : items;
-    return filtered.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, 'application_events');
-  }
+  const items = await getOrFetchUser(
+    userId,
+    'application_events',
+    async () => {
+      try {
+        const q = query(collection(db, 'application_events'), where('userId', '==', userId));
+        const snap = await withFirestoreOfflineRetry(() => getDocs(q));
+        return snap.docs
+          .map((d) => d.data() as ApplicationEventRecord)
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.LIST, 'application_events');
+      }
+    },
+    DEFAULT_USER_CACHE_TTL_MS
+  );
+  return applicationId ? items.filter((item) => item.applicationId === applicationId) : items;
 }
 
 export async function addApplicationEvent(event: ApplicationEventRecord): Promise<void> {
   try {
     const clean = stripUndefinedDeep(event);
     await setDoc(doc(db, 'application_events', event.id), clean);
+    invalidateUserCache(event.userId, 'application_events');
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, `application_events/${event.id}`);
   }
@@ -359,17 +445,24 @@ export async function getApplicationChecklistItems(
   userId: string,
   applicationId?: string
 ): Promise<ApplicationChecklistItemRecord[]> {
-  try {
-    const q = query(
-      collection(db, 'application_checklist_items'),
-      where('userId', '==', userId)
-    );
-    const snap = await withFirestoreOfflineRetry(() => getDocs(q));
-    const items = snap.docs.map((d) => d.data() as ApplicationChecklistItemRecord);
-    return applicationId ? items.filter((i) => i.applicationId === applicationId) : items;
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, 'application_checklist_items');
-  }
+  const items = await getOrFetchUser(
+    userId,
+    'application_checklist_items',
+    async () => {
+      try {
+        const q = query(
+          collection(db, 'application_checklist_items'),
+          where('userId', '==', userId)
+        );
+        const snap = await withFirestoreOfflineRetry(() => getDocs(q));
+        return snap.docs.map((d) => d.data() as ApplicationChecklistItemRecord);
+      } catch (error) {
+        handleFirestoreError(error, OperationType.LIST, 'application_checklist_items');
+      }
+    },
+    DEFAULT_USER_CACHE_TTL_MS
+  );
+  return applicationId ? items.filter((i) => i.applicationId === applicationId) : items;
 }
 
 export async function upsertApplicationChecklistItem(
@@ -378,6 +471,7 @@ export async function upsertApplicationChecklistItem(
   try {
     const clean = stripUndefinedDeep(item);
     await setDoc(doc(db, 'application_checklist_items', item.id), clean);
+    invalidateUserCache(item.userId, 'application_checklist_items');
   } catch (error) {
     handleFirestoreError(
       error,
@@ -389,20 +483,28 @@ export async function upsertApplicationChecklistItem(
 
 // 5. Documents & Document Analysis
 export async function getDocuments(userId: string): Promise<DocumentRecord[]> {
-  try {
-    const q = query(collection(db, 'documents'), where('userId', '==', userId));
-    const snap = await withFirestoreOfflineRetry(() => getDocs(q));
-    return snap.docs
-      .map((d) => d.data() as DocumentRecord)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, 'documents');
-  }
+  return getOrFetchUser(
+    userId,
+    'documents',
+    async () => {
+      try {
+        const q = query(collection(db, 'documents'), where('userId', '==', userId));
+        const snap = await withFirestoreOfflineRetry(() => getDocs(q));
+        return snap.docs
+          .map((d) => d.data() as DocumentRecord)
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.LIST, 'documents');
+      }
+    },
+    DEFAULT_USER_CACHE_TTL_MS
+  );
 }
 
 export async function createDocumentRecord(record: DocumentRecord): Promise<void> {
   try {
     await setDoc(doc(db, 'documents', record.id), stripUndefinedDeep(record));
+    invalidateUserCache(record.userId, 'documents');
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, `documents/${record.id}`);
   }
@@ -414,6 +516,7 @@ export async function updateDocumentFields(
 ): Promise<void> {
   try {
     await updateDoc(doc(db, 'documents', id), stripUndefinedDeep(fields));
+    invalidateUserCache(auth.currentUser?.uid ?? getActiveCacheUid(), 'documents');
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `documents/${id}`);
   }
@@ -428,6 +531,7 @@ export async function updateDocumentStatus(
       verificationStatus,
       updatedAt: new Date().toISOString(),
     });
+    invalidateUserCache(auth.currentUser?.uid ?? getActiveCacheUid(), 'documents');
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `documents/${id}`);
   }
@@ -436,6 +540,7 @@ export async function updateDocumentStatus(
 export async function deleteDocumentRecord(id: string): Promise<void> {
   try {
     await deleteDoc(doc(db, 'documents', id));
+    invalidateUserCache(auth.currentUser?.uid ?? getActiveCacheUid(), 'documents');
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `documents/${id}`);
   }
@@ -450,26 +555,36 @@ export async function deleteDocumentWithAnalyses(userId: string, documentId: str
     linked.forEach((anaDoc) => batch.delete(anaDoc.ref));
     batch.delete(doc(db, 'documents', documentId));
     await batch.commit();
+    invalidateUserCache(userId, 'documents');
+    invalidateUserCache(userId, 'document_analysis');
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `documents/${documentId}`);
   }
 }
 
 export async function getDocumentAnalyses(userId: string): Promise<DocumentAnalysis[]> {
-  try {
-    const q = query(collection(db, 'document_analysis'), where('userId', '==', userId));
-    const snap = await withFirestoreOfflineRetry(() => getDocs(q));
-    return snap.docs
-      .map((d) => d.data() as DocumentAnalysis)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, 'document_analysis');
-  }
+  return getOrFetchUser(
+    userId,
+    'document_analysis',
+    async () => {
+      try {
+        const q = query(collection(db, 'document_analysis'), where('userId', '==', userId));
+        const snap = await withFirestoreOfflineRetry(() => getDocs(q));
+        return snap.docs
+          .map((d) => d.data() as DocumentAnalysis)
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.LIST, 'document_analysis');
+      }
+    },
+    DEFAULT_USER_CACHE_TTL_MS
+  );
 }
 
 export async function saveDocumentAnalysis(analysis: DocumentAnalysis): Promise<void> {
   try {
     await setDoc(doc(db, 'document_analysis', analysis.id), stripUndefinedDeep(analysis));
+    invalidateUserCache(analysis.userId, 'document_analysis');
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, `document_analysis/${analysis.id}`);
   }
@@ -477,20 +592,28 @@ export async function saveDocumentAnalysis(analysis: DocumentAnalysis): Promise<
 
 // 6. Eligibility & Readiness Assessments
 export async function getEligibilityAssessments(userId: string): Promise<EligibilityAssessment[]> {
-  try {
-    const q = query(collection(db, 'eligibility_assessments'), where('userId', '==', userId));
-    const snap = await withFirestoreOfflineRetry(() => getDocs(q));
-    return snap.docs
-      .map((d) => d.data() as EligibilityAssessment)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, 'eligibility_assessments');
-  }
+  return getOrFetchUser(
+    userId,
+    'eligibility_assessments',
+    async () => {
+      try {
+        const q = query(collection(db, 'eligibility_assessments'), where('userId', '==', userId));
+        const snap = await withFirestoreOfflineRetry(() => getDocs(q));
+        return snap.docs
+          .map((d) => d.data() as EligibilityAssessment)
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.LIST, 'eligibility_assessments');
+      }
+    },
+    DEFAULT_USER_CACHE_TTL_MS
+  );
 }
 
 export async function saveEligibilityAssessment(item: EligibilityAssessment): Promise<void> {
   try {
     await setDoc(doc(db, 'eligibility_assessments', item.id), item);
+    invalidateUserCache(item.userId, 'eligibility_assessments');
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, `eligibility_assessments/${item.id}`);
   }
@@ -512,6 +635,8 @@ export async function saveEligibilityAssessmentWithDetails(
       });
       await batch.commit();
     }
+    invalidateUserCache(assessment.userId, 'eligibility_assessments');
+    invalidateUserCache(assessment.userId, `eligibility_assessment_details:${assessment.id}`);
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, `eligibility_assessments/${assessment.id}`);
   }
@@ -521,27 +646,41 @@ export async function getEligibilityAssessmentDetails(
   userId: string,
   assessmentId: string
 ): Promise<EligibilityAssessmentDetail[]> {
-  try {
-    const q = query(collection(db, 'eligibility_assessment_details'), where('userId', '==', userId));
-    const snap = await withFirestoreOfflineRetry(() => getDocs(q));
-    return snap.docs
-      .map((d) => d.data() as EligibilityAssessmentDetail)
-      .filter((row) => row.assessmentId === assessmentId);
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, 'eligibility_assessment_details');
-  }
+  return getOrFetchUser(
+    userId,
+    `eligibility_assessment_details:${assessmentId}`,
+    async () => {
+      try {
+        const q = query(collection(db, 'eligibility_assessment_details'), where('userId', '==', userId));
+        const snap = await withFirestoreOfflineRetry(() => getDocs(q));
+        return snap.docs
+          .map((d) => d.data() as EligibilityAssessmentDetail)
+          .filter((row) => row.assessmentId === assessmentId);
+      } catch (error) {
+        handleFirestoreError(error, OperationType.LIST, 'eligibility_assessment_details');
+      }
+    },
+    DEFAULT_USER_CACHE_TTL_MS
+  );
 }
 
 export async function getReadinessAssessments(userId: string): Promise<ReadinessAssessment[]> {
-  try {
-    const q = query(collection(db, 'readiness_assessments'), where('userId', '==', userId));
-    const snap = await withFirestoreOfflineRetry(() => getDocs(q));
-    return snap.docs
-      .map((d) => d.data() as ReadinessAssessment)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, 'readiness_assessments');
-  }
+  return getOrFetchUser(
+    userId,
+    'readiness_assessments',
+    async () => {
+      try {
+        const q = query(collection(db, 'readiness_assessments'), where('userId', '==', userId));
+        const snap = await withFirestoreOfflineRetry(() => getDocs(q));
+        return snap.docs
+          .map((d) => d.data() as ReadinessAssessment)
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.LIST, 'readiness_assessments');
+      }
+    },
+    DEFAULT_USER_CACHE_TTL_MS
+  );
 }
 
 export async function saveReadinessAssessment(item: ReadinessAssessment): Promise<void> {
@@ -557,6 +696,7 @@ export async function saveReadinessAssessment(item: ReadinessAssessment): Promis
       recommendedActions: item.recommendedActions?.slice(0, 40),
     });
     await setDoc(doc(db, 'readiness_assessments', item.id), cleanPayload);
+    invalidateUserCache(item.userId, 'readiness_assessments');
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, `readiness_assessments/${item.id}`);
   }
@@ -572,6 +712,7 @@ export async function updateReadinessAssessmentActions(
       recommendedActions: fields.recommendedActions?.slice(0, 40),
     });
     await updateDoc(doc(db, 'readiness_assessments', id), cleanFields);
+    invalidateUserCache(auth.currentUser?.uid ?? getActiveCacheUid(), 'readiness_assessments');
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `readiness_assessments/${id}`);
   }
@@ -579,15 +720,22 @@ export async function updateReadinessAssessmentActions(
 
 // 7. AI Conversations & Messages
 export async function getConversations(userId: string): Promise<AIConversation[]> {
-  try {
-    const q = query(collection(db, 'ai_conversations'), where('userId', '==', userId));
-    const snap = await withFirestoreOfflineRetry(() => getDocs(q));
-    return snap.docs
-      .map((d) => d.data() as AIConversation)
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, 'ai_conversations');
-  }
+  return getOrFetchUser(
+    userId,
+    'ai_conversations',
+    async () => {
+      try {
+        const q = query(collection(db, 'ai_conversations'), where('userId', '==', userId));
+        const snap = await withFirestoreOfflineRetry(() => getDocs(q));
+        return snap.docs
+          .map((d) => d.data() as AIConversation)
+          .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.LIST, 'ai_conversations');
+      }
+    },
+    DEFAULT_USER_CACHE_TTL_MS
+  );
 }
 
 export async function createConversation(conv: AIConversation): Promise<void> {
@@ -600,37 +748,45 @@ export async function createConversation(conv: AIConversation): Promise<void> {
       updatedAt: conv.updatedAt,
     };
     await setDoc(doc(db, 'ai_conversations', cleanConv.id), cleanConv);
+    invalidateUserCache(conv.userId, 'ai_conversations');
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, `ai_conversations/${conv.id}`);
   }
 }
 
 export async function getMessages(userId: string, conversationId: string): Promise<AIMessage[]> {
-  try {
-    const q = query(
-      collection(db, 'ai_messages'),
-      where('userId', '==', userId),
-      where('conversationId', '==', conversationId),
-      orderBy('createdAt', 'asc')
-    );
-    const snap = await withFirestoreOfflineRetry(() => getDocs(q));
-    return normalizeRetrievedMessages(
-      snap.docs.map((d) => d.data()),
-      conversationId
-    );
-  } catch {
-    // Fallback without composite index if index not yet created
-    try {
-      const q = query(collection(db, 'ai_messages'), where('userId', '==', userId));
-      const snap = await withFirestoreOfflineRetry(() => getDocs(q));
-      return normalizeRetrievedMessages(
-        snap.docs.map((d) => d.data()),
-        conversationId
-      );
-    } catch (fallbackError) {
-      handleFirestoreError(fallbackError, OperationType.LIST, 'ai_messages');
-    }
-  }
+  return getOrFetchUser(
+    userId,
+    `ai_messages:${conversationId}`,
+    async () => {
+      try {
+        const q = query(
+          collection(db, 'ai_messages'),
+          where('userId', '==', userId),
+          where('conversationId', '==', conversationId),
+          orderBy('createdAt', 'asc')
+        );
+        const snap = await withFirestoreOfflineRetry(() => getDocs(q));
+        return normalizeRetrievedMessages(
+          snap.docs.map((d) => d.data()),
+          conversationId
+        );
+      } catch {
+        // Fallback without composite index if index not yet created
+        try {
+          const q = query(collection(db, 'ai_messages'), where('userId', '==', userId));
+          const snap = await withFirestoreOfflineRetry(() => getDocs(q));
+          return normalizeRetrievedMessages(
+            snap.docs.map((d) => d.data()),
+            conversationId
+          );
+        } catch (fallbackError) {
+          handleFirestoreError(fallbackError, OperationType.LIST, 'ai_messages');
+        }
+      }
+    },
+    DEFAULT_USER_CACHE_TTL_MS
+  );
 }
 
 export interface AIMessagePersistenceAdapter {
@@ -653,6 +809,8 @@ export async function persistAIMessage(
         updatedAt: cleanMsg.createdAt,
       });
     }
+    invalidateUserCache(cleanMsg.userId, `ai_messages:${cleanMsg.conversationId}`);
+    invalidateUserCache(cleanMsg.userId, 'ai_conversations');
     return cleanMsg;
   } catch (error) {
     if (error instanceof AICompanionValidationError) {
@@ -673,6 +831,7 @@ export async function renameConversation(id: string, title: string): Promise<voi
       title: cleanTitle,
       updatedAt: new Date().toISOString(),
     });
+    invalidateUserCache(auth.currentUser?.uid ?? getActiveCacheUid(), 'ai_conversations');
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `ai_conversations/${id}`);
   }
@@ -700,6 +859,8 @@ export async function deleteConversationWithMessages(
     if (linked.length === 0) {
       await deleteDoc(doc(db, 'ai_conversations', conversationId));
     }
+    invalidateUserCache(userId, 'ai_conversations');
+    invalidateUserCache(userId, `ai_messages:${conversationId}`);
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `ai_conversations/${conversationId}`);
   }
@@ -707,22 +868,30 @@ export async function deleteConversationWithMessages(
 
 // 8. TrustGuard Reports
 export async function getTrustGuardReports(userId: string, isAdmin: boolean): Promise<TrustGuardReport[]> {
-  try {
-    const q = isAdmin
-      ? query(collection(db, 'trustguard_reports'))
-      : query(collection(db, 'trustguard_reports'), where('userId', '==', userId));
-    const snap = await withFirestoreOfflineRetry(() => getDocs(q));
-    return snap.docs
-      .map((d) => d.data() as TrustGuardReport)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, 'trustguard_reports');
-  }
+  return getOrFetchUser(
+    userId,
+    `trustguard_reports:${isAdmin ? 'admin' : 'student'}`,
+    async () => {
+      try {
+        const q = isAdmin
+          ? query(collection(db, 'trustguard_reports'))
+          : query(collection(db, 'trustguard_reports'), where('userId', '==', userId));
+        const snap = await withFirestoreOfflineRetry(() => getDocs(q));
+        return snap.docs
+          .map((d) => d.data() as TrustGuardReport)
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.LIST, 'trustguard_reports');
+      }
+    },
+    DEFAULT_USER_CACHE_TTL_MS
+  );
 }
 
 export async function createTrustGuardReport(report: TrustGuardReport): Promise<void> {
   try {
     await setDoc(doc(db, 'trustguard_reports', report.id), report);
+    invalidateUserCache(report.userId, 'trustguard_reports');
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, `trustguard_reports/${report.id}`);
   }
@@ -731,6 +900,7 @@ export async function createTrustGuardReport(report: TrustGuardReport): Promise<
 export async function updateTrustGuardReportAdmin(report: TrustGuardReport): Promise<void> {
   try {
     await setDoc(doc(db, 'trustguard_reports', report.id), report);
+    invalidateUserCache(auth.currentUser?.uid ?? getActiveCacheUid(), 'trustguard_reports');
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `trustguard_reports/${report.id}`);
   }
@@ -739,15 +909,22 @@ export async function updateTrustGuardReportAdmin(report: TrustGuardReport): Pro
 export async function getTrustGuardAssessments(
   userId: string
 ): Promise<TrustGuardDocumentAssessment[]> {
-  try {
-    const q = query(collection(db, 'trustguard_assessments'), where('userId', '==', userId));
-    const snap = await withFirestoreOfflineRetry(() => getDocs(q));
-    return snap.docs
-      .map((d) => d.data() as TrustGuardDocumentAssessment)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, 'trustguard_assessments');
-  }
+  return getOrFetchUser(
+    userId,
+    'trustguard_assessments',
+    async () => {
+      try {
+        const q = query(collection(db, 'trustguard_assessments'), where('userId', '==', userId));
+        const snap = await withFirestoreOfflineRetry(() => getDocs(q));
+        return snap.docs
+          .map((d) => d.data() as TrustGuardDocumentAssessment)
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.LIST, 'trustguard_assessments');
+      }
+    },
+    DEFAULT_USER_CACHE_TTL_MS
+  );
 }
 
 export async function saveTrustGuardAssessment(
@@ -764,6 +941,7 @@ export async function saveTrustGuardAssessment(
       disclaimer: item.disclaimer.slice(0, 580),
     });
     await setDoc(doc(db, 'trustguard_assessments', item.id), cleanPayload);
+    invalidateUserCache(item.userId, 'trustguard_assessments');
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, `trustguard_assessments/${item.id}`);
   }
@@ -780,6 +958,7 @@ export async function updateTrustGuardAssessmentFindings(
       findings: cleanFindings,
       updatedAt,
     });
+    invalidateUserCache(auth.currentUser?.uid ?? getActiveCacheUid(), 'trustguard_assessments');
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `trustguard_assessments/${id}`);
   }
@@ -787,21 +966,29 @@ export async function updateTrustGuardAssessmentFindings(
 
 // 9. Notifications & Preferences
 export async function getNotifications(userId: string): Promise<NotificationRecord[]> {
-  try {
-    const q = query(collection(db, 'notifications'), where('userId', '==', userId));
-    const snap = await withFirestoreOfflineRetry(() => getDocs(q));
-    return snap.docs
-      .map((d) => d.data() as NotificationRecord)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, 'notifications');
-  }
+  return getOrFetchUser(
+    userId,
+    'notifications',
+    async () => {
+      try {
+        const q = query(collection(db, 'notifications'), where('userId', '==', userId));
+        const snap = await withFirestoreOfflineRetry(() => getDocs(q));
+        return snap.docs
+          .map((d) => d.data() as NotificationRecord)
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.LIST, 'notifications');
+      }
+    },
+    DEFAULT_USER_CACHE_TTL_MS
+  );
 }
 
 export async function createNotification(notification: NotificationRecord): Promise<void> {
   try {
     const clean = stripUndefinedDeep(notification);
     await setDoc(doc(db, 'notifications', notification.id), clean);
+    invalidateUserCache(notification.userId, 'notifications');
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, `notifications/${notification.id}`);
   }
@@ -817,6 +1004,7 @@ export async function createNotificationsBatch(notifications: NotificationRecord
       });
       await batch.commit();
     }
+    invalidateUserCache(notifications[0]?.userId ?? auth.currentUser?.uid ?? getActiveCacheUid(), 'notifications');
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, 'notifications');
   }
@@ -828,6 +1016,7 @@ export async function markNotificationRead(id: string): Promise<void> {
       isRead: true,
       readAt: new Date().toISOString(),
     });
+    invalidateUserCache(auth.currentUser?.uid ?? getActiveCacheUid(), 'notifications');
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `notifications/${id}`);
   }
@@ -842,6 +1031,7 @@ export async function archiveNotification(id: string): Promise<void> {
       isArchived: true,
       archivedAt: now,
     });
+    invalidateUserCache(auth.currentUser?.uid ?? getActiveCacheUid(), 'notifications');
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `notifications/${id}`);
   }
@@ -850,6 +1040,7 @@ export async function archiveNotification(id: string): Promise<void> {
 export async function deleteNotification(id: string): Promise<void> {
   try {
     await deleteDoc(doc(db, 'notifications', id));
+    invalidateUserCache(auth.currentUser?.uid ?? getActiveCacheUid(), 'notifications');
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `notifications/${id}`);
   }
@@ -866,51 +1057,72 @@ export async function markAllNotificationsRead(ids: string[]): Promise<void> {
       });
       await batch.commit();
     }
+    invalidateUserCache(auth.currentUser?.uid ?? getActiveCacheUid(), 'notifications');
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, 'notifications');
   }
 }
 
 export async function getPublishedAnnouncements(): Promise<AdminAnnouncementRecord[]> {
-  try {
-    const q = query(collection(db, 'announcements'), where('status', '==', 'Published'));
-    const snap = await withFirestoreOfflineRetry(() => getDocs(q));
-    return snap.docs
-      .map((d) => d.data() as AdminAnnouncementRecord)
-      .sort((a, b) => (b.publishedAt || b.updatedAt).localeCompare(a.publishedAt || a.updatedAt));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, 'announcements');
-  }
+  return getOrFetchPublic(
+    'announcements',
+    async () => {
+      try {
+        const q = query(collection(db, 'announcements'), where('status', '==', 'Published'));
+        const snap = await withFirestoreOfflineRetry(() => getDocs(q));
+        return snap.docs
+          .map((d) => d.data() as AdminAnnouncementRecord)
+          .sort((a, b) => (b.publishedAt || b.updatedAt).localeCompare(a.publishedAt || a.updatedAt));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.LIST, 'announcements');
+      }
+    },
+    DEFAULT_PUBLIC_CACHE_TTL_MS
+  );
 }
 
 export async function getNotificationDeliveryLogs(
   userId: string
 ): Promise<NotificationDeliveryLogRecord[]> {
-  try {
-    const q = query(
-      collection(db, 'notification_delivery_logs'),
-      where('userId', '==', userId)
-    );
-    const snap = await withFirestoreOfflineRetry(() => getDocs(q));
-    return snap.docs
-      .map((d) => d.data() as NotificationDeliveryLogRecord)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, 'notification_delivery_logs');
-  }
+  return getOrFetchUser(
+    userId,
+    'notification_delivery_logs',
+    async () => {
+      try {
+        const q = query(
+          collection(db, 'notification_delivery_logs'),
+          where('userId', '==', userId)
+        );
+        const snap = await withFirestoreOfflineRetry(() => getDocs(q));
+        return snap.docs
+          .map((d) => d.data() as NotificationDeliveryLogRecord)
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.LIST, 'notification_delivery_logs');
+      }
+    },
+    DEFAULT_USER_CACHE_TTL_MS
+  );
 }
 
 export async function getNotificationPreferences(
   uid: string
 ): Promise<NotificationPreferenceRecord | null> {
-  try {
-    const snap = await withFirestoreOfflineRetry(() =>
-      getDoc(doc(db, 'notification_preferences', uid))
-    );
-    return snap.exists() ? (snap.data() as NotificationPreferenceRecord) : null;
-  } catch (error) {
-    handleFirestoreError(error, OperationType.GET, `notification_preferences/${uid}`);
-  }
+  return getOrFetchUser(
+    uid,
+    'notification_preferences',
+    async () => {
+      try {
+        const snap = await withFirestoreOfflineRetry(() =>
+          getDoc(doc(db, 'notification_preferences', uid))
+        );
+        return snap.exists() ? (snap.data() as NotificationPreferenceRecord) : null;
+      } catch (error) {
+        handleFirestoreError(error, OperationType.GET, `notification_preferences/${uid}`);
+      }
+    },
+    DEFAULT_USER_CACHE_TTL_MS
+  );
 }
 
 export async function saveNotificationPreferences(
@@ -919,6 +1131,8 @@ export async function saveNotificationPreferences(
   try {
     const clean = stripUndefinedDeep(pref);
     await setDoc(doc(db, 'notification_preferences', pref.uid), clean);
+    invalidateUserCache(pref.uid, 'notification_preferences');
+    invalidateUserCache(pref.uid, 'api:/api/notifications/preferences');
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `notification_preferences/${pref.uid}`);
   }

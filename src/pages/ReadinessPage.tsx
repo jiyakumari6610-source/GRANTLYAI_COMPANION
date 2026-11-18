@@ -43,6 +43,7 @@ import {
   evaluateScholarshipReadiness,
   type ReadinessEvaluationReport,
 } from '../lib/readinessEngine.ts';
+import { peekPublicCache, peekUserCache, setUserCache } from '../lib/workspaceCache.ts';
 import type {
   ApplicationRecord,
   DocumentAnalysis,
@@ -124,21 +125,41 @@ function getRingTone(scorePercent: number | null): 'indigo' | 'emerald' | 'amber
 
 export default function ReadinessPage() {
   const { user, profile, getIdToken } = useAuth();
+  const cachedDocs = peekUserCache<DocumentRecord[]>(user?.uid, 'documents');
+  const cachedAnalyses = peekUserCache<DocumentAnalysis[]>(user?.uid, 'document_analysis');
+  const cachedElig = peekUserCache<EligibilityAssessment[]>(user?.uid, 'eligibility_assessments');
+  const cachedSaved = peekUserCache<SavedScholarship[]>(user?.uid, 'saved_scholarships');
+  const cachedApps = peekUserCache<ApplicationRecord[]>(user?.uid, 'applications');
+  const cachedSch = peekPublicCache<{ items: Scholarship[]; isEmptyDatabase: boolean }>('scholarships');
+  const cachedAssess = peekUserCache<ReadinessAssessment[]>(user?.uid, 'readiness_assessments');
+  const hasWarmCache = Boolean(
+    cachedDocs && cachedAnalyses && cachedElig && cachedSaved && cachedApps && cachedSch && cachedAssess
+  );
 
-  const [documents, setDocuments] = useState<DocumentRecord[]>([]);
-  const [documentAnalyses, setDocumentAnalyses] = useState<DocumentAnalysis[]>([]);
-  const [eligibilityAssessments, setEligibilityAssessments] = useState<EligibilityAssessment[]>([]);
-  const [savedScholarships, setSavedScholarships] = useState<SavedScholarship[]>([]);
-  const [applications, setApplications] = useState<ApplicationRecord[]>([]);
-  const [scholarships, setScholarships] = useState<Scholarship[]>([]);
-  const [assessments, setAssessments] = useState<ReadinessAssessment[]>([]);
+  const [documents, setDocuments] = useState<DocumentRecord[]>(() => cachedDocs ?? []);
+  const [documentAnalyses, setDocumentAnalyses] = useState<DocumentAnalysis[]>(
+    () => cachedAnalyses ?? []
+  );
+  const [eligibilityAssessments, setEligibilityAssessments] = useState<EligibilityAssessment[]>(
+    () => cachedElig ?? []
+  );
+  const [savedScholarships, setSavedScholarships] = useState<SavedScholarship[]>(
+    () => cachedSaved ?? []
+  );
+  const [applications, setApplications] = useState<ApplicationRecord[]>(() => cachedApps ?? []);
+  const [scholarships, setScholarships] = useState<Scholarship[]>(() => cachedSch?.items ?? []);
+  const [assessments, setAssessments] = useState<ReadinessAssessment[]>(() => cachedAssess ?? []);
 
   const [serverReport, setServerReport] = useState<ReadinessEvaluationReport | null>(null);
-  const [actionItems, setActionItems] = useState<ReadinessActionItem[]>([]);
-  const [aiActionPlan, setAiActionPlan] = useState<string | null>(null);
+  const [actionItems, setActionItems] = useState<ReadinessActionItem[]>(
+    () => cachedAssess?.[0]?.recommendedActions ?? []
+  );
+  const [aiActionPlan, setAiActionPlan] = useState<string | null>(
+    () => cachedAssess?.[0]?.aiActionPlan ?? null
+  );
   const [aiReusedFromCache, setAiReusedFromCache] = useState(false);
 
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!hasWarmCache);
   const [recalculating, setRecalculating] = useState(false);
   const [generatingAi, setGeneratingAi] = useState(false);
   const [savingActionId, setSavingActionId] = useState<string | null>(null);
@@ -201,9 +222,11 @@ export default function ReadinessPage() {
       eligRes: EligibilityAssessment[];
       savedRes: SavedScholarship[];
       appsRes: ApplicationRecord[];
+      schRes: Scholarship[];
       latestSaved: ReadinessAssessment | null;
       includeAiExplanation: boolean;
       persistIfChanged: boolean;
+      forceRefresh?: boolean;
     }) => {
       const {
         uid,
@@ -212,10 +235,43 @@ export default function ReadinessPage() {
         eligRes,
         savedRes,
         appsRes,
+        schRes,
         latestSaved,
         includeAiExplanation,
         persistIfChanged,
+        forceRefresh,
       } = params;
+
+      const localDeterministic = evaluateScholarshipReadiness({
+        profile,
+        documents: docsRes,
+        documentAnalyses: anaRes,
+        eligibilityAssessments: eligRes,
+        savedScholarships: savedRes,
+        applications: appsRes,
+        scholarships: schRes,
+        previousActions: latestSaved?.recommendedActions ?? [],
+      });
+
+      const cacheKey = `api:/api/readiness/assess:${localDeterministic.dataFingerprint}`;
+      if (!includeAiExplanation && !forceRefresh) {
+        const cachedAssessApi = peekUserCache<AssessApiResponse>(uid, cacheKey);
+        if (cachedAssessApi) {
+          setServerReport(cachedAssessApi.report);
+          setActionItems(cachedAssessApi.report.recommendedActions);
+          if (cachedAssessApi.aiActionPlan) {
+            setAiActionPlan(cachedAssessApi.aiActionPlan);
+            setAiReusedFromCache(Boolean(cachedAssessApi.aiReusedFromCache));
+          } else if (
+            latestSaved?.dataFingerprint === cachedAssessApi.report.dataFingerprint &&
+            latestSaved.aiActionPlan
+          ) {
+            setAiActionPlan(latestSaved.aiActionPlan);
+            setAiReusedFromCache(true);
+          }
+          return cachedAssessApi;
+        }
+      }
 
       const token = await getIdToken();
       const res = await postProtectedAi<AssessApiResponse>('/api/readiness/assess', token, {
@@ -238,6 +294,7 @@ export default function ReadinessPage() {
           : null,
       });
 
+      setUserCache(uid, `api:/api/readiness/assess:${res.report.dataFingerprint}`, res, 60_000);
       setServerReport(res.report);
       setActionItems(res.report.recommendedActions);
 
@@ -280,75 +337,75 @@ export default function ReadinessPage() {
     [getIdToken, persistSnapshot, profile]
   );
 
+  const loadReadinessData = useCallback(async () => {
+    if (!user) return;
+    setError(null);
+    const [docsRes, anaRes, eligRes, savedRes, appsRes, schRes, assessRes] = await Promise.all([
+      getDocuments(user.uid),
+      getDocumentAnalyses(user.uid),
+      getEligibilityAssessments(user.uid),
+      getSavedScholarships(user.uid),
+      getApplications(user.uid),
+      getScholarships(),
+      getReadinessAssessments(user.uid),
+    ]);
+
+    setDocuments(docsRes);
+    setDocumentAnalyses(anaRes);
+    setEligibilityAssessments(eligRes);
+    setSavedScholarships(savedRes);
+    setApplications(appsRes);
+    setScholarships(schRes.items);
+    setAssessments(assessRes);
+
+    const latestSaved = assessRes[0] ?? null;
+    if (latestSaved?.dataFingerprint) {
+      persistedFingerprintsRef.current.add(latestSaved.dataFingerprint);
+    }
+    if (latestSaved?.aiActionPlan) {
+      setAiActionPlan(latestSaved.aiActionPlan);
+    }
+
+    try {
+      await runServerAssessment({
+        uid: user.uid,
+        docsRes,
+        anaRes,
+        eligRes,
+        savedRes,
+        appsRes,
+        schRes: schRes.items,
+        latestSaved,
+        includeAiExplanation: false,
+        persistIfChanged: true,
+      });
+    } catch (serverErr) {
+      setError(
+        serverErr instanceof Error
+          ? `Server readiness refresh note: ${serverErr.message}. Showing deterministic local evaluation.`
+          : 'Showing deterministic local evaluation.'
+      );
+    }
+  }, [user, runServerAssessment]);
+
   useEffect(() => {
     if (!user) return;
     let active = true;
 
-    (async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const [docsRes, anaRes, eligRes, savedRes, appsRes, schRes, assessRes] = await Promise.all([
-          getDocuments(user.uid),
-          getDocumentAnalyses(user.uid),
-          getEligibilityAssessments(user.uid),
-          getSavedScholarships(user.uid),
-          getApplications(user.uid),
-          getScholarships(),
-          getReadinessAssessments(user.uid),
-        ]);
-        if (!active) return;
-
-        setDocuments(docsRes);
-        setDocumentAnalyses(anaRes);
-        setEligibilityAssessments(eligRes);
-        setSavedScholarships(savedRes);
-        setApplications(appsRes);
-        setScholarships(schRes.items);
-        setAssessments(assessRes);
-
-        const latestSaved = assessRes[0] ?? null;
-        if (latestSaved?.dataFingerprint) {
-          persistedFingerprintsRef.current.add(latestSaved.dataFingerprint);
-        }
-        if (latestSaved?.aiActionPlan) {
-          setAiActionPlan(latestSaved.aiActionPlan);
-        }
-
-        try {
-          await runServerAssessment({
-            uid: user.uid,
-            docsRes,
-            anaRes,
-            eligRes,
-            savedRes,
-            appsRes,
-            latestSaved,
-            includeAiExplanation: false,
-            persistIfChanged: true,
-          });
-        } catch (serverErr) {
-          if (active) {
-            setError(
-              serverErr instanceof Error
-                ? `Server readiness refresh note: ${serverErr.message}. Showing deterministic local evaluation.`
-                : 'Showing deterministic local evaluation.'
-            );
-          }
-        }
-      } catch (err) {
+    loadReadinessData()
+      .catch((err) => {
         if (active) {
           setError(err instanceof Error ? err.message : 'Failed to load readiness data.');
         }
-      } finally {
+      })
+      .finally(() => {
         if (active) setLoading(false);
-      }
-    })();
+      });
 
     return () => {
       active = false;
     };
-  }, [user, runServerAssessment]);
+  }, [user, loadReadinessData]);
 
   const latestSaved = assessments[0] ?? null;
 
@@ -394,9 +451,11 @@ export default function ReadinessPage() {
         eligRes: eligibilityAssessments,
         savedRes: savedScholarships,
         appsRes: applications,
+        schRes: scholarships,
         latestSaved,
         includeAiExplanation: false,
         persistIfChanged: true,
+        forceRefresh: true,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to recalculate readiness assessment.');
@@ -417,9 +476,11 @@ export default function ReadinessPage() {
         eligRes: eligibilityAssessments,
         savedRes: savedScholarships,
         appsRes: applications,
+        schRes: scholarships,
         latestSaved,
         includeAiExplanation: true,
         persistIfChanged: true,
+        forceRefresh: true,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to generate AI readiness briefing.');
@@ -530,9 +591,25 @@ export default function ReadinessPage() {
       <PageTransition>
         <div className="space-y-6">
           {error && (
-            <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-sm text-rose-200 flex items-start gap-2.5">
-              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
-              <span>{error}</span>
+            <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-sm text-rose-200 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-start gap-2.5">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
+                <span>{error}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setLoading(true);
+                  void loadReadinessData()
+                    .catch((err) =>
+                      setError(err instanceof Error ? err.message : 'Failed to load readiness data.')
+                    )
+                    .finally(() => setLoading(false));
+                }}
+                className="px-3 py-1.5 text-xs font-semibold text-rose-100 bg-rose-500/25 hover:bg-rose-500/35 border border-rose-400/30 rounded-lg whitespace-nowrap"
+              >
+                Retry
+              </button>
             </div>
           )}
 

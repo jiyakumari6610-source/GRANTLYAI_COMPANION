@@ -23,7 +23,12 @@ import {
 import { AppShell } from '../components/AppShell.tsx';
 import { PageTransition, SkeletonCard } from '../components/ui/MotionPrimitives.tsx';
 import { useAuth } from '../context/AuthContext.tsx';
-import { getProtectedApi, postProtectedAi, putProtectedApi } from '../lib/apiClient.ts';
+import {
+  getCachedProtectedApi,
+  getProtectedApi,
+  postProtectedAi,
+  putProtectedApi,
+} from '../lib/apiClient.ts';
 import {
   archiveNotification,
   deleteNotification,
@@ -35,6 +40,7 @@ import {
   markNotificationRead,
   saveNotificationPreferences,
 } from '../lib/firestoreRepo.ts';
+import { peekPublicCache, peekUserCache } from '../lib/workspaceCache.ts';
 import {
   ALLOWED_DEADLINE_INTERVALS,
   doesProfileMatchAnnouncementAudience,
@@ -90,15 +96,43 @@ export default function NotificationsPage({
   const { user, profile, getIdToken } = useAuth();
   const navigate = useNavigate();
 
-  const [activeTab, setActiveTab] = useState<'feed' | 'preferences'>(initialTab);
-  const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
-  const [announcements, setAnnouncements] = useState<AdminAnnouncementRecord[]>([]);
-  const [deliveryLogs, setDeliveryLogs] = useState<NotificationDeliveryLogRecord[]>([]);
-  const [preferences, setPreferences] = useState<NotificationPreferenceRecord | null>(null);
-  const [emailProviderLabel, setEmailProviderLabel] = useState(
-    'Not Configured (Requires SMTP/Email Provider)'
+  const cachedNotifs = peekUserCache<NotificationRecord[]>(user?.uid, 'notifications');
+  const cachedAnns = peekPublicCache<AdminAnnouncementRecord[]>('announcements');
+  const cachedPrefsApi = peekUserCache<{
+    preferences: NotificationPreferenceRecord;
+    emailProvider?: { configured: boolean; statusLabel: string };
+  }>(user?.uid, 'api:/api/notifications/preferences');
+  const cachedPrefsRepo = peekUserCache<NotificationPreferenceRecord | null>(
+    user?.uid,
+    'notification_preferences'
   );
-  const [emailConfigured, setEmailConfigured] = useState(false);
+  const cachedLogsApi = peekUserCache<{
+    logs: NotificationDeliveryLogRecord[];
+    emailProvider?: { configured: boolean; statusLabel: string };
+  }>(user?.uid, 'api:/api/notifications/delivery-logs');
+  const cachedLogsRepo = peekUserCache<NotificationDeliveryLogRecord[]>(
+    user?.uid,
+    'notification_delivery_logs'
+  );
+  const initialEmailProvider = cachedPrefsApi?.emailProvider ?? cachedLogsApi?.emailProvider;
+
+  const [activeTab, setActiveTab] = useState<'feed' | 'preferences'>(initialTab);
+  const [notifications, setNotifications] = useState<NotificationRecord[]>(() => cachedNotifs ?? []);
+  const [announcements, setAnnouncements] = useState<AdminAnnouncementRecord[]>(
+    () => cachedAnns ?? []
+  );
+  const [deliveryLogs, setDeliveryLogs] = useState<NotificationDeliveryLogRecord[]>(
+    () => cachedLogsApi?.logs ?? cachedLogsRepo ?? []
+  );
+  const [preferences, setPreferences] = useState<NotificationPreferenceRecord | null>(
+    () => cachedPrefsApi?.preferences ?? cachedPrefsRepo ?? null
+  );
+  const [emailProviderLabel, setEmailProviderLabel] = useState(
+    () => initialEmailProvider?.statusLabel ?? 'Not Configured (Requires SMTP/Email Provider)'
+  );
+  const [emailConfigured, setEmailConfigured] = useState(
+    () => initialEmailProvider?.configured ?? false
+  );
   const [emptyScholarshipDatabase, setEmptyScholarshipDatabase] = useState(false);
 
   const [categoryFilter, setCategoryFilter] = useState<'All' | CanonicalNotificationBucket>('All');
@@ -106,7 +140,7 @@ export default function NotificationsPage({
   const [searchQuery, setSearchQuery] = useState('');
   const [visibleLimit, setVisibleLimit] = useState(PAGE_SIZE);
 
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => !(user && cachedNotifs !== undefined));
   const [syncing, setSyncing] = useState(false);
   const [savingPrefs, setSavingPrefs] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
@@ -116,19 +150,21 @@ export default function NotificationsPage({
     setActiveTab(initialTab);
   }, [initialTab]);
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (forceSpinner = false) => {
     if (!user) return;
-    setLoading(true);
+    const warm = peekUserCache(user.uid, 'notifications') !== undefined;
+    if (forceSpinner || !warm) {
+      setLoading(true);
+    }
     setError(null);
     try {
-      const token = await getIdToken();
       const [notifs, publishedAnns, prefsRes, logsRes] = await Promise.all([
         getNotifications(user.uid),
         getPublishedAnnouncements().catch(() => [] as AdminAnnouncementRecord[]),
-        getProtectedApi<{
+        getCachedProtectedApi<{
           preferences: NotificationPreferenceRecord;
           emailProvider?: { configured: boolean; statusLabel: string };
-        }>('/api/notifications/preferences', token).catch(async () => {
+        }>(user.uid, '/api/notifications/preferences', getIdToken, 60_000).catch(async () => {
           const fallback = await getNotificationPreferences(user.uid);
           return {
             preferences: normalizeNotificationPreferences(user.uid, fallback),
@@ -138,10 +174,10 @@ export default function NotificationsPage({
             },
           };
         }),
-        getProtectedApi<{
+        getCachedProtectedApi<{
           logs: NotificationDeliveryLogRecord[];
           emailProvider?: { configured: boolean; statusLabel: string };
-        }>('/api/notifications/delivery-logs', token).catch(async () => {
+        }>(user.uid, '/api/notifications/delivery-logs', getIdToken, 60_000).catch(async () => {
           const fallbackLogs = await getNotificationDeliveryLogs(user.uid).catch(() => []);
           return { logs: fallbackLogs, emailProvider: undefined };
         }),
@@ -414,9 +450,18 @@ export default function NotificationsPage({
           </div>
         )}
         {error && (
-          <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs sm:text-sm text-rose-200 flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
-            <span>{error}</span>
+          <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs sm:text-sm text-rose-200 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+              <span>{error}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => void loadData(true)}
+              className="px-3 py-1 text-xs font-semibold rounded-lg bg-rose-500/20 border border-rose-400/40 text-rose-100 hover:bg-rose-500/30 shrink-0"
+            >
+              Retry
+            </button>
           </div>
         )}
         {emptyScholarshipDatabase && (

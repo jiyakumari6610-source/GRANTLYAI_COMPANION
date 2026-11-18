@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
   AlertCircle,
@@ -23,6 +23,7 @@ import {
   type EligibilityEvaluationResult,
 } from '../lib/eligibilityEngine.ts';
 import { evaluateTrustGuardVerification } from '../lib/trustguardEngine.ts';
+import { peekPublicCache, peekUserCache } from '../lib/workspaceCache.ts';
 import {
   getDocumentAnalyses,
   getDocuments,
@@ -129,14 +130,34 @@ function sanitizeCriterionForFirestore(
 export default function EligibilityCheckerPage() {
   const { user, profile, refreshProfile, getIdToken } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
+  const requestedScholarshipId = searchParams.get('scholarshipId');
 
-  const [scholarships, setScholarships] = useState<Scholarship[]>([]);
-  const [customRules, setCustomRules] = useState<ScholarshipEligibilityRule[]>([]);
-  const [documents, setDocuments] = useState<DocumentRecord[]>([]);
-  const [documentAnalyses, setDocumentAnalyses] = useState<DocumentAnalysis[]>([]);
-  const [selectedId, setSelectedId] = useState<string>('');
+  const cachedSch = peekPublicCache<{ items: Scholarship[]; isEmptyDatabase: boolean }>('scholarships');
+  const cachedRules = peekPublicCache<ScholarshipEligibilityRule[]>('scholarship_eligibility_rules');
+  const cachedDocs = peekUserCache<DocumentRecord[]>(user?.uid, 'documents');
+  const cachedAnalyses = peekUserCache<DocumentAnalysis[]>(user?.uid, 'document_analysis');
+  const cachedHistory = peekUserCache<EligibilityAssessment[]>(
+    user?.uid,
+    'eligibility_assessments'
+  );
+
+  const [scholarships, setScholarships] = useState<Scholarship[]>(() => cachedSch?.items ?? []);
+  const [customRules, setCustomRules] = useState<ScholarshipEligibilityRule[]>(
+    () => cachedRules ?? []
+  );
+  const [documents, setDocuments] = useState<DocumentRecord[]>(() => cachedDocs ?? []);
+  const [documentAnalyses, setDocumentAnalyses] = useState<DocumentAnalysis[]>(
+    () => cachedAnalyses ?? []
+  );
+  const [selectedId, setSelectedId] = useState<string>(() => {
+    const items = cachedSch?.items ?? [];
+    if (requestedScholarshipId && items.some((s) => s.id === requestedScholarshipId)) {
+      return requestedScholarshipId;
+    }
+    return items[0]?.id ?? '';
+  });
   const [viewMode, setViewMode] = useState<'single' | 'catalogue'>('single');
-  const [history, setHistory] = useState<EligibilityAssessment[]>([]);
+  const [history, setHistory] = useState<EligibilityAssessment[]>(() => cachedHistory ?? []);
   const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(null);
   const [detailsByAssessmentId, setDetailsByAssessmentId] = useState<
     Record<string, EligibilityAssessmentDetail[]>
@@ -170,40 +191,38 @@ export default function EligibilityCheckerPage() {
   });
   const [savingMissing, setSavingMissing] = useState(false);
 
-  const requestedScholarshipId = searchParams.get('scholarshipId');
+  const loadWorkspace = useCallback(async () => {
+    setError(null);
+    const [{ items }, allRules, past, docs, analyses] = await Promise.all([
+      getScholarships(),
+      getScholarshipEligibilityRules().catch(() => [] as ScholarshipEligibilityRule[]),
+      user ? getEligibilityAssessments(user.uid) : Promise.resolve([]),
+      user ? getDocuments(user.uid) : Promise.resolve([]),
+      user ? getDocumentAnalyses(user.uid) : Promise.resolve([]),
+    ]);
+    setScholarships(items);
+    setCustomRules(allRules);
+    setDocuments(docs);
+    setDocumentAnalyses(analyses);
+    if (requestedScholarshipId && items.some((s) => s.id === requestedScholarshipId)) {
+      setSelectedId(requestedScholarshipId);
+    } else if (items[0]) {
+      setSelectedId((prev) => prev || items[0].id);
+    }
+    setHistory(past);
+  }, [user, requestedScholarshipId]);
 
   useEffect(() => {
     let active = true;
-    (async () => {
-      try {
-        const [{ items }, allRules, past, docs, analyses] = await Promise.all([
-          getScholarships(),
-          getScholarshipEligibilityRules().catch(() => [] as ScholarshipEligibilityRule[]),
-          user ? getEligibilityAssessments(user.uid) : Promise.resolve([]),
-          user ? getDocuments(user.uid) : Promise.resolve([]),
-          user ? getDocumentAnalyses(user.uid) : Promise.resolve([]),
-        ]);
-        if (!active) return;
-        setScholarships(items);
-        setCustomRules(allRules);
-        setDocuments(docs);
-        setDocumentAnalyses(analyses);
-        if (requestedScholarshipId && items.some((s) => s.id === requestedScholarshipId)) {
-          setSelectedId(requestedScholarshipId);
-        } else if (items[0]) {
-          setSelectedId(items[0].id);
-        }
-        setHistory(past);
-      } catch (err) {
-        if (active) {
-          setError(err instanceof Error ? err.message : 'Unable to load eligibility workspace.');
-        }
+    loadWorkspace().catch((err) => {
+      if (active) {
+        setError(err instanceof Error ? err.message : 'Unable to load eligibility workspace.');
       }
-    })();
+    });
     return () => {
       active = false;
     };
-  }, [user, requestedScholarshipId]);
+  }, [loadWorkspace]);
 
   const selectedScholarship = useMemo(
     () => scholarships.find((s) => s.id === selectedId) ?? null,
@@ -698,9 +717,18 @@ export default function EligibilityCheckerPage() {
               )}
 
               {error && (
-                <div className="p-3.5 rounded-xl bg-rose-500/15 border border-rose-500/30 text-sm text-rose-200 flex items-start gap-2.5">
-                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
-                  <span>{error}</span>
+                <div className="p-3.5 rounded-xl bg-rose-500/15 border border-rose-500/30 text-sm text-rose-200 flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-start gap-2.5">
+                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
+                    <span>{error}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void loadWorkspace()}
+                    className="px-3 py-1.5 text-xs font-semibold text-rose-100 bg-rose-500/25 hover:bg-rose-500/35 border border-rose-400/30 rounded-lg whitespace-nowrap"
+                  >
+                    Retry
+                  </button>
                 </div>
               )}
             </div>

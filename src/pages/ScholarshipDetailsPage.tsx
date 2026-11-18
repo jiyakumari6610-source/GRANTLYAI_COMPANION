@@ -26,23 +26,48 @@ import {
   toggleSavedScholarship,
 } from '../lib/firestoreRepo.ts';
 import { getEffectiveApplicationStatus } from '../lib/scholarshipEngine.ts';
-import type { ApplicationRecord, Scholarship } from '../types/database.ts';
+import { peekPublicCache, peekUserCache } from '../lib/workspaceCache.ts';
+import type { ApplicationRecord, SavedScholarship, Scholarship } from '../types/database.ts';
 
 export default function ScholarshipDetailsPage() {
   const { id } = useParams<{ id: string }>();
   const { user, profile, getIdToken } = useAuth();
   const navigate = useNavigate();
 
-  const [scholarship, setScholarship] = useState<Scholarship | null>(null);
-  const [savedId, setSavedId] = useState<string | undefined>(undefined);
-  const [trackedApp, setTrackedApp] = useState<ApplicationRecord | null>(null);
-  const [loading, setLoading] = useState(true);
+  const cachedCatalog = peekPublicCache<{ items: Scholarship[]; isEmptyDatabase: boolean }>('scholarships');
+  const initialScholarship = id
+    ? cachedCatalog?.items.find((item) => item.id === id) ??
+      peekPublicCache<Scholarship>(`scholarship:${id}`) ??
+      null
+    : null;
+  const cachedSaved = peekUserCache<SavedScholarship[]>(user?.uid, 'saved_scholarships');
+  const cachedApps = peekUserCache<ApplicationRecord[]>(user?.uid, 'applications');
+
+  const [scholarship, setScholarship] = useState<Scholarship | null>(() => initialScholarship);
+  const [savedId, setSavedId] = useState<string | undefined>(() =>
+    id ? cachedSaved?.find((s) => s.scholarshipId === id)?.id : undefined
+  );
+  const [trackedApp, setTrackedApp] = useState<ApplicationRecord | null>(() =>
+    id && cachedApps ? findDuplicateActiveApplication(cachedApps, id) : null
+  );
+  const [loading, setLoading] = useState(!initialScholarship);
   const [trackingBusy, setTrackingBusy] = useState(false);
   const [trackError, setTrackError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
     let active = true;
+    const warmCatalogItem =
+      peekPublicCache<{ items: Scholarship[] }>('scholarships')?.items.find((item) => item.id === id) ??
+      peekPublicCache<Scholarship>(`scholarship:${id}`) ??
+      null;
+    if (warmCatalogItem) {
+      setScholarship(warmCatalogItem);
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
+
     (async () => {
       try {
         const item = await getScholarshipById(id);

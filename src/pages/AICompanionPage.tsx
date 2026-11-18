@@ -61,7 +61,9 @@ import type {
   NotificationRecord,
   ReadinessAssessment,
   SavedScholarship,
+  Scholarship,
 } from '../types/database.ts';
+import { peekPublicCache, peekUserCache } from '../lib/workspaceCache.ts';
 
 const STARTER_PROMPTS = [
   'Which scholarships in the database am I eligible for, and what are their official portals and deadlines?',
@@ -185,25 +187,62 @@ interface FailedAttempt {
 export default function AICompanionPage() {
   const { user, profile, getIdToken } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [conversations, setConversations] = useState<AIConversation[]>([]);
-  const [activeConvId, setActiveConvId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<AIMessage[]>([]);
-  const [loadingThreads, setLoadingThreads] = useState(true);
-  const [loadingMessages, setLoadingMessages] = useState(false);
+  const cachedConvs = peekUserCache<AIConversation[]>(user?.uid, 'ai_conversations');
+  const initialConvId = cachedConvs?.[0]?.id ?? null;
+  const cachedInitialMsgs = initialConvId
+    ? peekUserCache<AIMessage[]>(user?.uid, `ai_messages:${initialConvId}`)
+    : undefined;
+  const cachedDocs = peekUserCache<DocumentRecord[]>(user?.uid, 'documents');
+  const cachedAnalyses = peekUserCache<DocumentAnalysis[]>(user?.uid, 'document_analysis');
+  const cachedElig = peekUserCache<EligibilityAssessment[]>(user?.uid, 'eligibility_assessments');
+  const cachedSaved = peekUserCache<SavedScholarship[]>(user?.uid, 'saved_scholarships');
+  const cachedApps = peekUserCache<ApplicationRecord[]>(user?.uid, 'applications');
+  const cachedEvents = peekUserCache<ApplicationEventRecord[]>(user?.uid, 'application_events');
+  const cachedChecklist = peekUserCache<ApplicationChecklistItemRecord[]>(
+    user?.uid,
+    'application_checklist_items'
+  );
+  const cachedReadiness = peekUserCache<ReadinessAssessment[]>(user?.uid, 'readiness_assessments');
+  const cachedNotifications = peekUserCache<NotificationRecord[]>(user?.uid, 'notifications');
+  const cachedSch = peekPublicCache<{ items: Scholarship[]; isEmptyDatabase: boolean }>('scholarships');
+
+  const [conversations, setConversations] = useState<AIConversation[]>(() => cachedConvs ?? []);
+  const [activeConvId, setActiveConvId] = useState<string | null>(() => initialConvId);
+  const [messages, setMessages] = useState<AIMessage[]>(() =>
+    initialConvId && cachedInitialMsgs
+      ? normalizeRetrievedMessages(cachedInitialMsgs, initialConvId)
+      : []
+  );
+  const [loadingThreads, setLoadingThreads] = useState(() => !cachedConvs);
+  const [loadingMessages, setLoadingMessages] = useState(
+    () => Boolean(initialConvId && !cachedInitialMsgs)
+  );
 
   // Grounded student database records
-  const [documents, setDocuments] = useState<DocumentRecord[]>([]);
-  const [analyses, setAnalyses] = useState<DocumentAnalysis[]>([]);
-  const [eligibilityAssessments, setEligibilityAssessments] = useState<EligibilityAssessment[]>([]);
-  const [savedScholarships, setSavedScholarships] = useState<SavedScholarship[]>([]);
-  const [applications, setApplications] = useState<ApplicationRecord[]>([]);
-  const [applicationEvents, setApplicationEvents] = useState<ApplicationEventRecord[]>([]);
+  const [documents, setDocuments] = useState<DocumentRecord[]>(() => cachedDocs ?? []);
+  const [analyses, setAnalyses] = useState<DocumentAnalysis[]>(() => cachedAnalyses ?? []);
+  const [eligibilityAssessments, setEligibilityAssessments] = useState<EligibilityAssessment[]>(
+    () => cachedElig ?? []
+  );
+  const [savedScholarships, setSavedScholarships] = useState<SavedScholarship[]>(
+    () => cachedSaved ?? []
+  );
+  const [applications, setApplications] = useState<ApplicationRecord[]>(() => cachedApps ?? []);
+  const [applicationEvents, setApplicationEvents] = useState<ApplicationEventRecord[]>(
+    () => cachedEvents ?? []
+  );
   const [applicationChecklistItems, setApplicationChecklistItems] = useState<
     ApplicationChecklistItemRecord[]
-  >([]);
-  const [readinessAssessments, setReadinessAssessments] = useState<ReadinessAssessment[]>([]);
-  const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
-  const [catalogCount, setCatalogCount] = useState<number | null>(null);
+  >(() => cachedChecklist ?? []);
+  const [readinessAssessments, setReadinessAssessments] = useState<ReadinessAssessment[]>(
+    () => cachedReadiness ?? []
+  );
+  const [notifications, setNotifications] = useState<NotificationRecord[]>(
+    () => cachedNotifications ?? []
+  );
+  const [catalogCount, setCatalogCount] = useState<number | null>(
+    () => cachedSch?.items.length ?? null
+  );
 
   // Chat input & controls
   const [input, setInput] = useState(() => searchParams.get('prompt') ?? '');
@@ -242,10 +281,27 @@ export default function AICompanionPage() {
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
-    setLoadingThreads(true);
+    if (!peekUserCache<AIConversation[]>(user.uid, 'ai_conversations')) {
+      setLoadingThreads(true);
+    }
+
+    // Decouple thread list loading from background grounding context so sidebar & active thread render immediately
+    getConversations(user.uid)
+      .then((convList) => {
+        if (cancelled) return;
+        setConversations(convList);
+        setActiveConvId((prev) => prev ?? (convList[0]?.id ?? null));
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(formatCompanionErrorMessage(err, 'Failed to load companion threads.'));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingThreads(false);
+      });
 
     Promise.all([
-      getConversations(user.uid),
       getDocuments(user.uid),
       getDocumentAnalyses(user.uid),
       getEligibilityAssessments(user.uid),
@@ -259,7 +315,6 @@ export default function AICompanionPage() {
     ])
       .then(
         ([
-          convList,
           docsRes,
           anaRes,
           eligRes,
@@ -272,8 +327,6 @@ export default function AICompanionPage() {
           scholarshipsRes,
         ]) => {
           if (cancelled) return;
-          setConversations(convList);
-          setActiveConvId((prev) => prev ?? (convList[0]?.id ?? null));
           setDocuments(docsRes);
           setAnalyses(anaRes);
           setEligibilityAssessments(eligRes);
@@ -288,11 +341,8 @@ export default function AICompanionPage() {
       )
       .catch((err) => {
         if (!cancelled) {
-          setError(formatCompanionErrorMessage(err, 'Failed to load companion context.'));
+          setError(formatCompanionErrorMessage(err, 'Failed to load companion grounding context.'));
         }
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingThreads(false);
       });
 
     return () => {
@@ -303,6 +353,7 @@ export default function AICompanionPage() {
   useEffect(() => {
     if (!user || !activeConvId) {
       setMessages([]);
+      setLoadingMessages(false);
       return;
     }
     if (skipNextFetchConvIdRef.current === activeConvId) {
@@ -310,7 +361,13 @@ export default function AICompanionPage() {
       return;
     }
     let cancelled = false;
-    setLoadingMessages(true);
+    const warmMessages = peekUserCache<AIMessage[]>(user.uid, `ai_messages:${activeConvId}`);
+    if (warmMessages) {
+      setMessages(normalizeRetrievedMessages(warmMessages, activeConvId));
+      setLoadingMessages(false);
+    } else {
+      setLoadingMessages(true);
+    }
     setError(null);
     setFailedAttempt(null);
 

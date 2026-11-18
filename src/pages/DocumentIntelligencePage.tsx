@@ -27,8 +27,14 @@ import {
   StaggerItem,
 } from '../components/ui/MotionPrimitives.tsx';
 import { useAuth } from '../context/AuthContext.tsx';
-import { deleteProtected, fetchProtectedBlob, getProtectedApi, postProtectedAi } from '../lib/apiClient.ts';
+import {
+  deleteProtected,
+  fetchProtectedBlob,
+  getCachedProtectedApi,
+  postProtectedAi,
+} from '../lib/apiClient.ts';
 import { compareDocumentsAgainstScholarship } from '../lib/documentComparison.ts';
+import { peekPublicCache, peekUserCache } from '../lib/workspaceCache.ts';
 import {
   buildMarksheetExtractedFields,
   recalculateMarksheetWithUserConfirmation,
@@ -132,12 +138,30 @@ interface ServerProcessResponse {
   };
 }
 
+interface StorageStatusApiPayload {
+  uploadAvailable: boolean;
+  permanentStorageAvailable?: boolean;
+  analysisAvailable?: boolean;
+  mode?: 'permanent-storage' | 'temporary-analysis';
+  reason: string;
+}
+
 export default function DocumentIntelligencePage() {
   const { user, profile, refreshProfile, getIdToken } = useAuth();
-  const [documents, setDocuments] = useState<DocumentRecord[]>([]);
-  const [analyses, setAnalyses] = useState<DocumentAnalysis[]>([]);
-  const [scholarships, setScholarships] = useState<Scholarship[]>([]);
-  const [selectedScholarshipId, setSelectedScholarshipId] = useState<string>('');
+  const cachedDocs = peekUserCache<DocumentRecord[]>(user?.uid, 'documents');
+  const cachedAnalyses = peekUserCache<DocumentAnalysis[]>(user?.uid, 'document_analysis');
+  const cachedSch = peekPublicCache<{ items: Scholarship[]; isEmptyDatabase: boolean }>('scholarships');
+  const cachedStorageStatus = peekUserCache<StorageStatusApiPayload>(
+    user?.uid,
+    'api:/api/documents/storage-status'
+  );
+
+  const [documents, setDocuments] = useState<DocumentRecord[]>(() => cachedDocs ?? []);
+  const [analyses, setAnalyses] = useState<DocumentAnalysis[]>(() => cachedAnalyses ?? []);
+  const [scholarships, setScholarships] = useState<Scholarship[]>(() => cachedSch?.items ?? []);
+  const [selectedScholarshipId, setSelectedScholarshipId] = useState<string>(
+    () => cachedSch?.items?.[0]?.id ?? ''
+  );
 
   const [documentType, setDocumentType] = useState<string>(DOCUMENT_CATEGORIES[1]);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -147,7 +171,9 @@ export default function DocumentIntelligencePage() {
   const [statusNote, setStatusNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const [expandedDocId, setExpandedDocId] = useState<string | null>(null);
+  const [expandedDocId, setExpandedDocId] = useState<string | null>(
+    () => cachedDocs?.[0]?.id ?? null
+  );
   const [previewState, setPreviewState] = useState<{
     fileName: string;
     mimeType: string;
@@ -189,45 +215,63 @@ export default function DocumentIntelligencePage() {
     analysisAvailable: boolean;
     mode: 'permanent-storage' | 'temporary-analysis';
     reason: string;
-  }>({
-    checked: false,
-    uploadAvailable: false,
-    permanentStorageAvailable: false,
-    analysisAvailable: false,
-    mode: 'temporary-analysis',
-    reason: 'Checking document storage and AI analysis availability...',
+  }>(() => {
+    if (cachedStorageStatus) {
+      const permanent = Boolean(
+        cachedStorageStatus.permanentStorageAvailable ?? cachedStorageStatus.uploadAvailable
+      );
+      const analysis = Boolean(cachedStorageStatus.analysisAvailable);
+      return {
+        checked: true,
+        uploadAvailable: Boolean(cachedStorageStatus.uploadAvailable),
+        permanentStorageAvailable: permanent,
+        analysisAvailable: analysis,
+        mode: cachedStorageStatus.mode === 'permanent-storage' ? 'permanent-storage' : 'temporary-analysis',
+        reason:
+          cachedStorageStatus.reason ||
+          (analysis
+            ? 'Permanent file storage is unavailable on the free tier. Temporary in-memory PDF/OCR upload & AI analysis is active.'
+            : 'Document upload and AI analysis are currently unavailable.'),
+      };
+    }
+    return {
+      checked: false,
+      uploadAvailable: false,
+      permanentStorageAvailable: false,
+      analysisAvailable: false,
+      mode: 'temporary-analysis',
+      reason: 'Checking document storage and AI analysis availability...',
+    };
   });
 
   useEffect(() => {
     if (!user) return;
     let active = true;
-    Promise.all([
-      getDocuments(user.uid),
-      getDocumentAnalyses(user.uid),
-      getScholarships(),
-    ]).then(([docsList, analysesList, schRes]) => {
-      if (!active) return;
-      setDocuments(docsList);
-      setAnalyses(analysesList);
-      setScholarships(schRes.items);
-      if (schRes.items[0]) {
-        setSelectedScholarshipId(schRes.items[0].id);
-      }
-      if (docsList[0]) {
-        setExpandedDocId(docsList[0].id);
-      }
-    });
+    Promise.all([getDocuments(user.uid), getDocumentAnalyses(user.uid), getScholarships()])
+      .then(([docsList, analysesList, schRes]) => {
+        if (!active) return;
+        setDocuments(docsList);
+        setAnalyses(analysesList);
+        setScholarships(schRes.items);
+        if (schRes.items[0]) {
+          setSelectedScholarshipId((prev) => prev || schRes.items[0].id);
+        }
+        if (docsList[0]) {
+          setExpandedDocId((prev) => prev || docsList[0].id);
+        }
+      })
+      .catch((err) => {
+        if (active) {
+          setError(err instanceof Error ? err.message : 'Unable to load documents or scholarship rules.');
+        }
+      });
 
-    getIdToken()
-      .then((token) =>
-        getProtectedApi<{
-          uploadAvailable: boolean;
-          permanentStorageAvailable?: boolean;
-          analysisAvailable?: boolean;
-          mode?: 'permanent-storage' | 'temporary-analysis';
-          reason: string;
-        }>('/api/documents/storage-status', token)
-      )
+    getCachedProtectedApi<StorageStatusApiPayload>(
+      user.uid,
+      '/api/documents/storage-status',
+      getIdToken,
+      120_000
+    )
       .then((res) => {
         if (!active) return;
         const permanent = Boolean(res.permanentStorageAvailable ?? res.uploadAvailable);

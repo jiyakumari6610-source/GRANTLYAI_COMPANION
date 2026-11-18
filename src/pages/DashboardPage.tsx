@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   AlertTriangle,
@@ -40,6 +40,7 @@ import {
   parseDeadlineTimestamp,
   rankRecommendedScholarships,
 } from '../lib/scholarshipEngine.ts';
+import { peekPublicCache, peekUserCache } from '../lib/workspaceCache.ts';
 import type {
   ApplicationRecord,
   DocumentAnalysis,
@@ -51,49 +52,69 @@ import type {
 
 export default function DashboardPage() {
   const { user, profile } = useAuth();
-  const [scholarships, setScholarships] = useState<Scholarship[]>([]);
-  const [isEmptyDatabase, setIsEmptyDatabase] = useState(false);
-  const [applications, setApplications] = useState<ApplicationRecord[]>([]);
-  const [saved, setSaved] = useState<SavedScholarship[]>([]);
-  const [documents, setDocuments] = useState<DocumentRecord[]>([]);
-  const [documentAnalyses, setDocumentAnalyses] = useState<DocumentAnalysis[]>([]);
-  const [eligibilityAssessments, setEligibilityAssessments] = useState<EligibilityAssessment[]>([]);
-  const [loading, setLoading] = useState(true);
+  const cachedSch = peekPublicCache<{ items: Scholarship[]; isEmptyDatabase: boolean }>('scholarships');
+  const cachedApps = peekUserCache<ApplicationRecord[]>(user?.uid, 'applications');
+  const cachedSaved = peekUserCache<SavedScholarship[]>(user?.uid, 'saved_scholarships');
+  const cachedDocs = peekUserCache<DocumentRecord[]>(user?.uid, 'documents');
+  const cachedAnalyses = peekUserCache<DocumentAnalysis[]>(user?.uid, 'document_analysis');
+  const cachedElig = peekUserCache<EligibilityAssessment[]>(user?.uid, 'eligibility_assessments');
+
+  const hasWarmCache = Boolean(
+    cachedSch && cachedApps && cachedSaved && cachedDocs && cachedAnalyses && cachedElig
+  );
+
+  const [scholarships, setScholarships] = useState<Scholarship[]>(() => cachedSch?.items ?? []);
+  const [isEmptyDatabase, setIsEmptyDatabase] = useState<boolean>(
+    () => cachedSch?.isEmptyDatabase ?? false
+  );
+  const [applications, setApplications] = useState<ApplicationRecord[]>(() => cachedApps ?? []);
+  const [saved, setSaved] = useState<SavedScholarship[]>(() => cachedSaved ?? []);
+  const [documents, setDocuments] = useState<DocumentRecord[]>(() => cachedDocs ?? []);
+  const [documentAnalyses, setDocumentAnalyses] = useState<DocumentAnalysis[]>(
+    () => cachedAnalyses ?? []
+  );
+  const [eligibilityAssessments, setEligibilityAssessments] = useState<EligibilityAssessment[]>(
+    () => cachedElig ?? []
+  );
+  const [loading, setLoading] = useState(!hasWarmCache);
   const [error, setError] = useState<string | null>(null);
+
+  const loadDashboard = useCallback(async () => {
+    if (!user) return;
+    setError(null);
+    const [schRes, appsRes, savedRes, docsRes, anaRes, eligRes] = await Promise.all([
+      getScholarships(),
+      getApplications(user.uid),
+      getSavedScholarships(user.uid),
+      getDocuments(user.uid),
+      getDocumentAnalyses(user.uid),
+      getEligibilityAssessments(user.uid),
+    ]);
+    setScholarships(schRes.items);
+    setIsEmptyDatabase(schRes.isEmptyDatabase);
+    setApplications(appsRes);
+    setSaved(savedRes);
+    setDocuments(docsRes);
+    setDocumentAnalyses(anaRes);
+    setEligibilityAssessments(eligRes);
+  }, [user]);
 
   useEffect(() => {
     if (!user) return;
     let active = true;
-    (async () => {
-      try {
-        const [schRes, appsRes, savedRes, docsRes, anaRes, eligRes] = await Promise.all([
-          getScholarships(),
-          getApplications(user.uid),
-          getSavedScholarships(user.uid),
-          getDocuments(user.uid),
-          getDocumentAnalyses(user.uid),
-          getEligibilityAssessments(user.uid),
-        ]);
-        if (!active) return;
-        setScholarships(schRes.items);
-        setIsEmptyDatabase(schRes.isEmptyDatabase);
-        setApplications(appsRes);
-        setSaved(savedRes);
-        setDocuments(docsRes);
-        setDocumentAnalyses(anaRes);
-        setEligibilityAssessments(eligRes);
-      } catch (err) {
+    loadDashboard()
+      .catch((err) => {
         if (active) {
           setError(err instanceof Error ? err.message : 'Unable to load dashboard records.');
         }
-      } finally {
+      })
+      .finally(() => {
         if (active) setLoading(false);
-      }
-    })();
+      });
     return () => {
       active = false;
     };
-  }, [user]);
+  }, [user, loadDashboard]);
 
   const completeness = useMemo(() => computeProfileCompleteness(profile), [profile]);
   const readinessReport = useMemo(
@@ -243,8 +264,22 @@ export default function DashboardPage() {
         )}
 
         {error && (
-          <div className="p-4 rounded-2xl bg-rose-500/15 border border-rose-500/30 text-sm text-rose-200">
-            {error}
+          <div className="p-4 rounded-2xl bg-rose-500/15 border border-rose-500/30 text-sm text-rose-200 flex flex-wrap items-center justify-between gap-3">
+            <span>{error}</span>
+            <button
+              type="button"
+              onClick={() => {
+                setLoading(true);
+                void loadDashboard()
+                  .catch((err) =>
+                    setError(err instanceof Error ? err.message : 'Unable to load dashboard records.')
+                  )
+                  .finally(() => setLoading(false));
+              }}
+              className="px-3 py-1.5 text-xs font-semibold text-rose-100 bg-rose-500/25 hover:bg-rose-500/35 border border-rose-400/30 rounded-lg whitespace-nowrap"
+            >
+              Retry
+            </button>
           </div>
         )}
 

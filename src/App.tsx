@@ -1,31 +1,33 @@
 import { Suspense, lazy } from 'react';
 import { BrowserRouter, Link, Route, Routes } from 'react-router-dom';
 import { MotionConfig } from 'motion/react';
+import { WorkspaceLayout } from './components/AppShell.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import { ProtectedRoute } from './components/ProtectedRoute.tsx';
 import { AuthProvider } from './context/AuthContext.tsx';
+import { routeModuleLoaders } from './lib/routePreload.ts';
 import LandingPage from './pages/LandingPage.tsx';
 
-const AICompanionPage = lazy(() => import('./pages/AICompanionPage.tsx'));
-const AdminDashboardPage = lazy(() => import('./pages/AdminDashboardPage.tsx'));
+const AICompanionPage = lazy(routeModuleLoaders['/companion']);
+const AdminDashboardPage = lazy(routeModuleLoaders['/admin']);
 const AdminLoginPage = lazy(() => import('./pages/AdminLoginPage.tsx'));
-const ApplicationDetailPage = lazy(() => import('./pages/ApplicationDetailPage.tsx'));
-const ApplicationsPage = lazy(() => import('./pages/ApplicationsPage.tsx'));
-const DashboardPage = lazy(() => import('./pages/DashboardPage.tsx'));
-const DiscoveryPage = lazy(() => import('./pages/DiscoveryPage.tsx'));
-const DocumentIntelligencePage = lazy(() => import('./pages/DocumentIntelligencePage.tsx'));
-const EligibilityCheckerPage = lazy(() => import('./pages/EligibilityCheckerPage.tsx'));
+const ApplicationDetailPage = lazy(routeModuleLoaders['/applications/:id']);
+const ApplicationsPage = lazy(routeModuleLoaders['/applications']);
+const DashboardPage = lazy(routeModuleLoaders['/dashboard']);
+const DiscoveryPage = lazy(routeModuleLoaders['/scholarships']);
+const DocumentIntelligencePage = lazy(routeModuleLoaders['/documents']);
+const EligibilityCheckerPage = lazy(routeModuleLoaders['/eligibility']);
 const LoginPage = lazy(() => import('./pages/LoginPage.tsx'));
-const NotificationsPage = lazy(() => import('./pages/NotificationsPage.tsx'));
-const OnboardingPage = lazy(() => import('./pages/OnboardingPage.tsx'));
+const NotificationsPage = lazy(routeModuleLoaders['/notifications']);
+const OnboardingPage = lazy(routeModuleLoaders['/onboarding']);
 const PrivacyPolicyPage = lazy(() => import('./pages/PrivacyPolicyPage.tsx'));
-const ProfilePage = lazy(() => import('./pages/ProfilePage.tsx'));
-const ReadinessPage = lazy(() => import('./pages/ReadinessPage.tsx'));
+const ProfilePage = lazy(routeModuleLoaders['/profile']);
+const ReadinessPage = lazy(routeModuleLoaders['/readiness']);
 const RegisterPage = lazy(() => import('./pages/RegisterPage.tsx'));
-const ScholarshipDetailsPage = lazy(() => import('./pages/ScholarshipDetailsPage.tsx'));
+const ScholarshipDetailsPage = lazy(routeModuleLoaders['/scholarships/:id']);
 const SupportGrievancePage = lazy(() => import('./pages/SupportGrievancePage.tsx'));
 const TermsOfServicePage = lazy(() => import('./pages/TermsOfServicePage.tsx'));
-const TrustGuardPage = lazy(() => import('./pages/TrustGuardPage.tsx'));
+const TrustGuardPage = lazy(routeModuleLoaders['/trustguard']);
 
 function RouteLoadingFallback() {
   return (
@@ -88,125 +90,38 @@ export default function App() {
                 <Route path="/support" element={<SupportGrievancePage />} />
 
                 <Route
-                  path="/onboarding"
                   element={
                     <ProtectedRoute>
-                      <OnboardingPage />
+                      <WorkspaceLayout />
                     </ProtectedRoute>
                   }
-                />
-                <Route
-                  path="/dashboard"
-                  element={
-                    <ProtectedRoute>
-                      <DashboardPage />
-                    </ProtectedRoute>
-                  }
-                />
-                <Route
-                  path="/scholarships"
-                  element={
-                    <ProtectedRoute>
-                      <DiscoveryPage />
-                    </ProtectedRoute>
-                  }
-                />
-                <Route
-                  path="/scholarships/:id"
-                  element={
-                    <ProtectedRoute>
-                      <ScholarshipDetailsPage />
-                    </ProtectedRoute>
-                  }
-                />
-                <Route
-                  path="/eligibility"
-                  element={
-                    <ProtectedRoute>
-                      <EligibilityCheckerPage />
-                    </ProtectedRoute>
-                  }
-                />
-                <Route
-                  path="/documents"
-                  element={
-                    <ProtectedRoute>
-                      <DocumentIntelligencePage />
-                    </ProtectedRoute>
-                  }
-                />
-                <Route
-                  path="/companion"
-                  element={
-                    <ProtectedRoute>
-                      <AICompanionPage />
-                    </ProtectedRoute>
-                  }
-                />
-                <Route
-                  path="/readiness"
-                  element={
-                    <ProtectedRoute>
-                      <ReadinessPage />
-                    </ProtectedRoute>
-                  }
-                />
-                <Route
-                  path="/applications"
-                  element={
-                    <ProtectedRoute>
-                      <ApplicationsPage />
-                    </ProtectedRoute>
-                  }
-                />
-                <Route
-                  path="/applications/:id"
-                  element={
-                    <ProtectedRoute>
-                      <ApplicationDetailPage />
-                    </ProtectedRoute>
-                  }
-                />
-                <Route
-                  path="/trustguard"
-                  element={
-                    <ProtectedRoute>
-                      <TrustGuardPage />
-                    </ProtectedRoute>
-                  }
-                />
-                <Route
-                  path="/notifications"
-                  element={
-                    <ProtectedRoute>
-                      <NotificationsPage initialTab="feed" />
-                    </ProtectedRoute>
-                  }
-                />
-                <Route
-                  path="/notifications/preferences"
-                  element={
-                    <ProtectedRoute>
-                      <NotificationsPage initialTab="preferences" />
-                    </ProtectedRoute>
-                  }
-                />
-                <Route
-                  path="/profile"
-                  element={
-                    <ProtectedRoute>
-                      <ProfilePage />
-                    </ProtectedRoute>
-                  }
-                />
-                <Route
-                  path="/admin"
-                  element={
-                    <ProtectedRoute requireAdmin>
-                      <AdminDashboardPage />
-                    </ProtectedRoute>
-                  }
-                />
+                >
+                  <Route path="/onboarding" element={<OnboardingPage />} />
+                  <Route path="/dashboard" element={<DashboardPage />} />
+                  <Route path="/scholarships" element={<DiscoveryPage />} />
+                  <Route path="/scholarships/:id" element={<ScholarshipDetailsPage />} />
+                  <Route path="/eligibility" element={<EligibilityCheckerPage />} />
+                  <Route path="/documents" element={<DocumentIntelligencePage />} />
+                  <Route path="/companion" element={<AICompanionPage />} />
+                  <Route path="/readiness" element={<ReadinessPage />} />
+                  <Route path="/applications" element={<ApplicationsPage />} />
+                  <Route path="/applications/:id" element={<ApplicationDetailPage />} />
+                  <Route path="/trustguard" element={<TrustGuardPage />} />
+                  <Route path="/notifications" element={<NotificationsPage initialTab="feed" />} />
+                  <Route
+                    path="/notifications/preferences"
+                    element={<NotificationsPage initialTab="preferences" />}
+                  />
+                  <Route path="/profile" element={<ProfilePage />} />
+                  <Route
+                    path="/admin"
+                    element={
+                      <ProtectedRoute requireAdmin>
+                        <AdminDashboardPage />
+                      </ProtectedRoute>
+                    }
+                  />
+                </Route>
 
                 <Route path="*" element={<NotFoundPage />} />
               </Routes>
