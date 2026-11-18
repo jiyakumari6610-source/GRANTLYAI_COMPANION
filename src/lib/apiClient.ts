@@ -19,6 +19,11 @@ export async function parseJsonApiResponse<TResponse>(response: Response): Promi
       payload && typeof payload.error === 'string' && payload.error.trim()
         ? payload.error.trim()
         : null;
+    if (response.status === 413 && !serverError) {
+      throw new Error(
+        'The uploaded file is too large for the server gateway limit. Please upload a PDF or image under 3 MB (or compress the scan) and retry.'
+      );
+    }
     throw new Error(serverError || `Request failed with status ${response.status}`);
   }
 

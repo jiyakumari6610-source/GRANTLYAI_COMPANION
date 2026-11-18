@@ -98,6 +98,14 @@ function getProcessingStatusClass(status?: DocumentProcessingStatus): string {
   }
 }
 
+function hasStoredBinary(docItem: DocumentRecord): boolean {
+  return (
+    (docItem.storageProvider === 'firebase-storage' ||
+      docItem.storageProvider === 'private-vault') &&
+    docItem.storagePath !== 'temporary-in-memory'
+  );
+}
+
 interface ServerProcessResponse {
   processingStatus: 'Completed' | 'Needs Review';
   verificationStatus: 'Analyzed' | 'Needs Attention';
@@ -171,15 +179,23 @@ export default function DocumentIntelligencePage() {
 
   const replaceInputRef = useRef<HTMLInputElement | null>(null);
   const [replaceTargetDoc, setReplaceTargetDoc] = useState<DocumentRecord | null>(null);
+  const reanalyzeInputRef = useRef<HTMLInputElement | null>(null);
+  const [reanalyzeTargetDoc, setReanalyzeTargetDoc] = useState<DocumentRecord | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const [storageStatus, setStorageStatus] = useState<{
     checked: boolean;
     uploadAvailable: boolean;
+    permanentStorageAvailable: boolean;
+    analysisAvailable: boolean;
+    mode: 'permanent-storage' | 'temporary-analysis';
     reason: string;
   }>({
     checked: false,
     uploadAvailable: false,
-    reason: 'Checking document storage availability...',
+    permanentStorageAvailable: false,
+    analysisAvailable: false,
+    mode: 'temporary-analysis',
+    reason: 'Checking document storage and AI analysis availability...',
   });
 
   useEffect(() => {
@@ -204,19 +220,29 @@ export default function DocumentIntelligencePage() {
 
     getIdToken()
       .then((token) =>
-        getProtectedApi<{ uploadAvailable: boolean; reason: string }>(
-          '/api/documents/storage-status',
-          token
-        )
+        getProtectedApi<{
+          uploadAvailable: boolean;
+          permanentStorageAvailable?: boolean;
+          analysisAvailable?: boolean;
+          mode?: 'permanent-storage' | 'temporary-analysis';
+          reason: string;
+        }>('/api/documents/storage-status', token)
       )
       .then((res) => {
         if (!active) return;
+        const permanent = Boolean(res.permanentStorageAvailable ?? res.uploadAvailable);
+        const analysis = Boolean(res.analysisAvailable);
         setStorageStatus({
           checked: true,
           uploadAvailable: Boolean(res.uploadAvailable),
+          permanentStorageAvailable: permanent,
+          analysisAvailable: analysis,
+          mode: res.mode === 'permanent-storage' ? 'permanent-storage' : 'temporary-analysis',
           reason:
             res.reason ||
-            'Document upload and binary storage are temporarily unavailable during the current public beta.',
+            (analysis
+              ? 'Permanent file storage is unavailable on the free tier. Temporary in-memory PDF/OCR upload & AI analysis is active.'
+              : 'Document upload and AI analysis are currently unavailable.'),
         });
       })
       .catch(() => {
@@ -224,8 +250,11 @@ export default function DocumentIntelligencePage() {
         setStorageStatus({
           checked: true,
           uploadAvailable: false,
+          permanentStorageAvailable: false,
+          analysisAvailable: true,
+          mode: 'temporary-analysis',
           reason:
-            'Document upload and binary storage are temporarily unavailable during the current public beta.',
+            'Permanent file storage is unavailable on the free tier. Temporary in-memory PDF/OCR upload & AI analysis is active: extraction results are saved to your account while files are discarded after processing.',
         });
       });
 
@@ -409,10 +438,159 @@ export default function DocumentIntelligencePage() {
     }
   };
 
+  const runTemporaryDirectAnalysis = async (params: {
+    file: File;
+    targetDocType: string;
+    token: string;
+    existingDoc?: DocumentRecord | null;
+  }): Promise<void> => {
+    if (!user) return;
+    const { file, targetDocType, token, existingDoc } = params;
+    if (file.size === 0) {
+      throw new Error(`"${file.name}" is empty (0 bytes).`);
+    }
+    if (!isSupportedFile(file)) {
+      throw new Error(
+        `"${file.name}" is unsupported. Only PDF, JPG, JPEG, and PNG documents are accepted.`
+      );
+    }
+    if (file.size > MAX_CLIENT_BYTES) {
+      throw new Error(`"${file.name}" exceeds the 8 MB upload limit.`);
+    }
+
+    const inferredMime =
+      file.type ||
+      (file.name.toLowerCase().endsWith('.pdf')
+        ? 'application/pdf'
+        : file.name.toLowerCase().endsWith('.png')
+          ? 'image/png'
+          : 'image/jpeg');
+
+    const base64Data = await fileToBase64(file);
+    const res = await postProtectedAi<ServerProcessResponse>(
+      '/api/ai/analyze-document',
+      token,
+      {
+        documentType: targetDocType,
+        fileName: file.name,
+        mimeType: inferredMime,
+        base64Data,
+        scholarshipId: selectedScholarship?.id || null,
+        profile,
+        scholarship: selectedScholarship,
+      }
+    );
+
+    const analyzedAt = new Date().toISOString();
+    const docId = existingDoc ? existingDoc.id : makeId('doc');
+    const cleanFileName = file.name.slice(0, 240);
+    const cleanMime = inferredMime.slice(0, 120);
+    const cleanExtractionMethod = (res.extractionMethod || 'pdf-text').slice(0, 80);
+
+    const analysisRecord: DocumentAnalysis = {
+      id: makeId('ana'),
+      userId: user.uid,
+      documentId: docId,
+      detectedType: (res.analysis.detectedType || targetDocType).slice(0, 120),
+      readabilityStatus: res.analysis.readabilityStatus,
+      extractionMethod: cleanExtractionMethod,
+      pageCount: Math.max(0, Math.min(500, res.pageCount || 1)),
+      rawTextPreview: (res.rawTextPreview || '').slice(0, 2400),
+      issuingAuthority: (res.analysis.issuingAuthority || '').slice(0, 200),
+      validityNotes: (res.analysis.validityNotes || '').slice(0, 500),
+      expiryWarning: (res.analysis.expiryWarning || '').slice(0, 400),
+      overallConfidence: res.analysis.overallConfidence,
+      extractedFields: (res.analysis.extractedFields || []).slice(0, 60),
+      ...(res.analysis.marksheetSummary
+        ? {
+            marksheetSummary: {
+              ...res.analysis.marksheetSummary,
+              subjects: (res.analysis.marksheetSummary.subjects || []).slice(0, 30),
+            },
+          }
+        : {}),
+      missingFields: (res.analysis.missingFields || []).slice(0, 30),
+      unreadableFields: (res.analysis.unreadableFields || []).slice(0, 30),
+      profileMismatches: (res.analysis.profileMismatches || []).slice(0, 20),
+      manualVerificationItems: (res.analysis.manualVerificationItems || []).slice(0, 20),
+      issuesFound: (res.analysis.issuesFound || []).slice(0, 20),
+      recommendations: (res.analysis.recommendations || []).slice(0, 20),
+      readinessVerdict: res.analysis.readinessVerdict,
+      disclaimer: (res.disclaimer || '').slice(0, 400),
+      createdAt: analyzedAt,
+    };
+
+    if (existingDoc) {
+      await saveDocumentAnalysis(analysisRecord);
+      await updateDocumentFields(existingDoc.id, {
+        fileName: cleanFileName,
+        mimeType: cleanMime,
+        fileSizeBytes: file.size,
+        storagePath: 'temporary-in-memory',
+        downloadUrl: '',
+        verificationStatus: res.verificationStatus,
+        processingStatus: res.processingStatus,
+        extractionMethod: cleanExtractionMethod,
+        pageCount: analysisRecord.pageCount,
+        lastAnalyzedAt: analyzedAt,
+        errorDetails: '',
+        updatedAt: analyzedAt,
+      });
+
+      const updatedRecord: DocumentRecord = {
+        ...existingDoc,
+        fileName: cleanFileName,
+        mimeType: cleanMime,
+        fileSizeBytes: file.size,
+        storagePath: 'temporary-in-memory',
+        downloadUrl: '',
+        storageProvider: undefined,
+        verificationStatus: res.verificationStatus,
+        processingStatus: res.processingStatus,
+        extractionMethod: cleanExtractionMethod,
+        pageCount: analysisRecord.pageCount,
+        lastAnalyzedAt: analyzedAt,
+        errorDetails: '',
+        updatedAt: analyzedAt,
+      };
+      setAnalyses((prev) => [analysisRecord, ...prev]);
+      setDocuments((prev) => prev.map((d) => (d.id === existingDoc.id ? updatedRecord : d)));
+    } else {
+      const docRecord: DocumentRecord = {
+        id: docId,
+        userId: user.uid,
+        documentType: targetDocType,
+        fileName: cleanFileName,
+        mimeType: cleanMime,
+        fileSizeBytes: file.size,
+        storagePath: 'temporary-in-memory',
+        downloadUrl: '',
+        verificationStatus: res.verificationStatus,
+        processingStatus: res.processingStatus,
+        extractionMethod: cleanExtractionMethod,
+        pageCount: analysisRecord.pageCount,
+        lastAnalyzedAt: analyzedAt,
+        errorDetails: '',
+        createdAt: analyzedAt,
+        updatedAt: analyzedAt,
+      };
+
+      // Parent document MUST exist in Firestore before saving document_analysis (enforced by firestore.rules)
+      await createDocumentRecord(docRecord);
+      await saveDocumentAnalysis(analysisRecord);
+      setDocuments((prev) => [docRecord, ...prev]);
+      setAnalyses((prev) => [analysisRecord, ...prev]);
+    }
+    setExpandedDocId(docId);
+  };
+
   const handleUploadAndAnalyze = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user || selectedFiles.length === 0) return;
-    if (!storageStatus.uploadAvailable) {
+
+    const usePermanentStorage =
+      storageStatus.uploadAvailable && storageStatus.permanentStorageAvailable;
+    if (!usePermanentStorage && !storageStatus.analysisAvailable) {
       setError(storageStatus.reason);
       return;
     }
@@ -424,6 +602,9 @@ export default function DocumentIntelligencePage() {
       const token = await getIdToken();
       for (let i = 0; i < selectedFiles.length; i++) {
         const file = selectedFiles[i];
+        if (file.size === 0) {
+          throw new Error(`"${file.name}" is empty (0 bytes).`);
+        }
         if (!isSupportedFile(file)) {
           throw new Error(
             `"${file.name}" is unsupported. Only PDF, JPG, JPEG, and PNG documents are accepted.`
@@ -433,53 +614,69 @@ export default function DocumentIntelligencePage() {
           throw new Error(`"${file.name}" exceeds the 8 MB upload limit.`);
         }
 
-        setStatusNote(
-          `[${i + 1}/${selectedFiles.length}] Validating & storing "${file.name}" securely...`
-        );
-        const docId = makeId('doc');
-        const base64Data = await fileToBase64(file);
+        if (usePermanentStorage) {
+          setStatusNote(
+            `[${i + 1}/${selectedFiles.length}] Validating & storing "${file.name}" securely...`
+          );
+          const docId = makeId('doc');
+          const base64Data = await fileToBase64(file);
 
-        const uploadRes = await postProtectedAi<{
-          storagePath: string;
-          storageProvider: 'firebase-storage' | 'private-vault';
-          mimeType: string;
-          fileSizeBytes: number;
-        }>('/api/documents/upload', token, {
-          docId,
-          fileName: file.name,
-          mimeType: file.type || 'application/octet-stream',
-          base64Data,
-        });
+          const uploadRes = await postProtectedAi<{
+            storagePath: string;
+            storageProvider: 'firebase-storage' | 'private-vault';
+            mimeType: string;
+            fileSizeBytes: number;
+          }>('/api/documents/upload', token, {
+            docId,
+            fileName: file.name,
+            mimeType: file.type || 'application/octet-stream',
+            base64Data,
+          });
 
-        const now = new Date().toISOString();
-        const docRecord: DocumentRecord = {
-          id: docId,
-          userId: user.uid,
-          documentType,
-          fileName: file.name,
-          mimeType: uploadRes.mimeType,
-          fileSizeBytes: uploadRes.fileSizeBytes,
-          storagePath: uploadRes.storagePath,
-          downloadUrl: '',
-          storageProvider: uploadRes.storageProvider,
-          verificationStatus: 'Uploaded',
-          processingStatus: 'Pending',
-          createdAt: now,
-          updatedAt: now,
-        };
+          const now = new Date().toISOString();
+          const docRecord: DocumentRecord = {
+            id: docId,
+            userId: user.uid,
+            documentType,
+            fileName: file.name,
+            mimeType: uploadRes.mimeType,
+            fileSizeBytes: uploadRes.fileSizeBytes,
+            storagePath: uploadRes.storagePath,
+            downloadUrl: '',
+            storageProvider: uploadRes.storageProvider,
+            verificationStatus: 'Uploaded',
+            processingStatus: 'Pending',
+            createdAt: now,
+            updatedAt: now,
+          };
 
-        await createDocumentRecord(docRecord);
-        setDocuments((prev) => [docRecord, ...prev]);
+          await createDocumentRecord(docRecord);
+          setDocuments((prev) => [docRecord, ...prev]);
 
-        setStatusNote(
-          `[${i + 1}/${selectedFiles.length}] Running PDF/OCR extraction & Gemini analysis for "${file.name}"...`
-        );
-        await runProcessingPipeline(docRecord, token);
+          setStatusNote(
+            `[${i + 1}/${selectedFiles.length}] Running PDF/OCR extraction & Gemini analysis for "${file.name}"...`
+          );
+          await runProcessingPipeline(docRecord, token);
+        } else {
+          setStatusNote(
+            `[${i + 1}/${selectedFiles.length}] Running temporary in-memory OCR & AI analysis for "${file.name}"...`
+          );
+          await runTemporaryDirectAnalysis({
+            file,
+            targetDocType: documentType,
+            token,
+          });
+        }
       }
 
+      const analyzedCount = selectedFiles.length;
       setSelectedFiles([]);
       if (uploadInputRef.current) uploadInputRef.current.value = '';
-      setStatusNote(null);
+      setStatusNote(
+        usePermanentStorage
+          ? `Uploaded and analyzed ${analyzedCount} document(s).`
+          : `Analysis saved for ${analyzedCount} document(s). Note: Processed in temporary memory only — original files were discarded and are not permanently stored.`
+      );
     } catch (err) {
       setStatusNote(null);
       setError(err instanceof Error ? err.message : 'Document upload or processing failed.');
@@ -495,8 +692,15 @@ export default function DocumentIntelligencePage() {
     setReplaceTargetDoc(null);
 
     if (!file || !target || !user) return;
-    if (!storageStatus.uploadAvailable) {
+
+    const usePermanentStorage =
+      storageStatus.uploadAvailable && storageStatus.permanentStorageAvailable;
+    if (!usePermanentStorage && !storageStatus.analysisAvailable) {
       setError(storageStatus.reason);
+      return;
+    }
+    if (file.size === 0) {
+      setError(`"${file.name}" is empty (0 bytes).`);
       return;
     }
     if (!isSupportedFile(file)) {
@@ -509,57 +713,102 @@ export default function DocumentIntelligencePage() {
     }
 
     setError(null);
-    setStatusNote(`Replacing "${target.fileName}" with "${file.name}" and re-analyzing...`);
+    setStatusNote(
+      usePermanentStorage
+        ? `Replacing "${target.fileName}" with "${file.name}" and re-analyzing...`
+        : `Analyzing replacement file "${file.name}" in temporary memory...`
+    );
     markDocBusy(target.id, true);
 
     try {
       const token = await getIdToken();
-      const base64Data = await fileToBase64(file);
-      const uploadRes = await postProtectedAi<{
-        storagePath: string;
-        storageProvider: 'firebase-storage' | 'private-vault';
-        mimeType: string;
-        fileSizeBytes: number;
-      }>('/api/documents/upload', token, {
-        docId: target.id,
-        fileName: file.name,
-        mimeType: file.type || 'application/octet-stream',
-        base64Data,
-      });
+      if (usePermanentStorage) {
+        const base64Data = await fileToBase64(file);
+        const uploadRes = await postProtectedAi<{
+          storagePath: string;
+          storageProvider: 'firebase-storage' | 'private-vault';
+          mimeType: string;
+          fileSizeBytes: number;
+        }>('/api/documents/upload', token, {
+          docId: target.id,
+          fileName: file.name,
+          mimeType: file.type || 'application/octet-stream',
+          base64Data,
+        });
 
-      const now = new Date().toISOString();
-      const updatedDoc: DocumentRecord = {
-        ...target,
-        fileName: file.name,
-        mimeType: uploadRes.mimeType,
-        fileSizeBytes: uploadRes.fileSizeBytes,
-        storagePath: uploadRes.storagePath,
-        downloadUrl: '',
-        storageProvider: uploadRes.storageProvider,
-        processingStatus: 'Pending',
-        verificationStatus: 'Uploaded',
-        errorDetails: '',
-        updatedAt: now,
-      };
+        const now = new Date().toISOString();
+        const updatedDoc: DocumentRecord = {
+          ...target,
+          fileName: file.name,
+          mimeType: uploadRes.mimeType,
+          fileSizeBytes: uploadRes.fileSizeBytes,
+          storagePath: uploadRes.storagePath,
+          downloadUrl: '',
+          storageProvider: uploadRes.storageProvider,
+          processingStatus: 'Pending',
+          verificationStatus: 'Uploaded',
+          errorDetails: '',
+          updatedAt: now,
+        };
 
-      await updateDocumentFields(target.id, {
-        fileName: updatedDoc.fileName,
-        mimeType: updatedDoc.mimeType,
-        fileSizeBytes: updatedDoc.fileSizeBytes,
-        storagePath: updatedDoc.storagePath,
-        downloadUrl: '',
-        storageProvider: updatedDoc.storageProvider,
-        processingStatus: 'Pending',
-        verificationStatus: 'Uploaded',
-        errorDetails: '',
-        updatedAt: now,
-      });
-      setDocuments((prev) => prev.map((d) => (d.id === target.id ? updatedDoc : d)));
-      await runProcessingPipeline(updatedDoc, token);
-      setStatusNote(null);
+        await updateDocumentFields(target.id, {
+          fileName: updatedDoc.fileName,
+          mimeType: updatedDoc.mimeType,
+          fileSizeBytes: updatedDoc.fileSizeBytes,
+          storagePath: updatedDoc.storagePath,
+          downloadUrl: '',
+          storageProvider: updatedDoc.storageProvider,
+          processingStatus: 'Pending',
+          verificationStatus: 'Uploaded',
+          errorDetails: '',
+          updatedAt: now,
+        });
+        setDocuments((prev) => prev.map((d) => (d.id === target.id ? updatedDoc : d)));
+        await runProcessingPipeline(updatedDoc, token);
+        setStatusNote(null);
+      } else {
+        await runTemporaryDirectAnalysis({
+          file,
+          targetDocType: target.documentType,
+          token,
+          existingDoc: target,
+        });
+        setStatusNote(
+          `Updated analysis for "${file.name}". Original file was processed in memory and not permanently stored.`
+        );
+      }
     } catch (err) {
       setStatusNote(null);
-      setError(err instanceof Error ? err.message : 'Unable to replace document.');
+      setError(err instanceof Error ? err.message : 'Unable to replace or re-analyze document.');
+    } finally {
+      markDocBusy(target.id, false);
+    }
+  };
+
+  const handleReanalyzeFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    const target = reanalyzeTargetDoc;
+    e.target.value = '';
+    setReanalyzeTargetDoc(null);
+
+    if (!file || !target || !user) return;
+    setError(null);
+    setStatusNote(`Re-analyzing "${file.name}" in temporary memory...`);
+    markDocBusy(target.id, true);
+    try {
+      const token = await getIdToken();
+      await runTemporaryDirectAnalysis({
+        file,
+        targetDocType: target.documentType,
+        token,
+        existingDoc: target,
+      });
+      setStatusNote(
+        `Re-analysis saved for "${file.name}". Original file was processed in memory and not permanently stored.`
+      );
+    } catch (err) {
+      setStatusNote(null);
+      setError(err instanceof Error ? err.message : 'Re-analysis failed.');
     } finally {
       markDocBusy(target.id, false);
     }
@@ -567,6 +816,16 @@ export default function DocumentIntelligencePage() {
 
   const handleRetryAnalysis = async (docItem: DocumentRecord) => {
     if (!user || activeDocIds.has(docItem.id)) return;
+    if (!hasStoredBinary(docItem) || !storageStatus.permanentStorageAvailable) {
+      if (!storageStatus.analysisAvailable) {
+        setError(storageStatus.reason);
+        return;
+      }
+      setReanalyzeTargetDoc(docItem);
+      reanalyzeInputRef.current?.click();
+      return;
+    }
+
     setError(null);
     setStatusNote(`Retrying PDF/OCR extraction & analysis for "${docItem.fileName}"...`);
     try {
@@ -581,6 +840,12 @@ export default function DocumentIntelligencePage() {
 
   const handlePreview = async (docItem: DocumentRecord) => {
     if (!user) return;
+    if (!hasStoredBinary(docItem)) {
+      setError(
+        'Original file preview is unavailable because this document was processed in temporary memory and is not permanently stored.'
+      );
+      return;
+    }
     setPreviewLoadingId(docItem.id);
     setError(null);
     try {
@@ -607,8 +872,10 @@ export default function DocumentIntelligencePage() {
     if (!user) return;
     setError(null);
     try {
-      const token = await getIdToken();
-      await deleteProtected(`/api/documents/${docItem.id}/file`, token).catch(() => undefined);
+      if (hasStoredBinary(docItem)) {
+        const token = await getIdToken();
+        await deleteProtected(`/api/documents/${docItem.id}/file`, token).catch(() => undefined);
+      }
       await deleteDocumentWithAnalyses(user.uid, docItem.id);
       setDocuments((prev) => prev.filter((d) => d.id !== docItem.id));
       setAnalyses((prev) => prev.filter((a) => a.documentId !== docItem.id));
@@ -805,10 +1072,13 @@ export default function DocumentIntelligencePage() {
     }
   };
 
+  const canUploadOrAnalyze =
+    storageStatus.permanentStorageAvailable || storageStatus.analysisAvailable;
+
   const handleDropFiles = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     setDragActive(false);
-    if (!storageStatus.uploadAvailable) return;
+    if (!storageStatus.checked || !canUploadOrAnalyze) return;
     const dropped = Array.from(e.dataTransfer.files ?? []);
     if (dropped.length > 0) {
       setSelectedFiles(dropped);
@@ -829,6 +1099,14 @@ export default function DocumentIntelligencePage() {
             accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
             className="hidden"
             onChange={handleReplaceFileSelected}
+          />
+          {/* Hidden file input for Re-analyze File action in temporary mode */}
+          <input
+            ref={reanalyzeInputRef}
+            type="file"
+            accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+            className="hidden"
+            onChange={handleReanalyzeFileSelected}
           />
 
           {/* KPI Overview Strip */}
@@ -874,22 +1152,34 @@ export default function DocumentIntelligencePage() {
                 Document Verification, Requirement Comparison &amp; Marksheet Rules
               </h2>
               <p className="text-xs text-slate-400">
-                Compare your scholarship requirements below and review saved extraction reports. New file uploads support PDF, JPG, JPEG, and PNG scans (max 8 MB) when private storage is active.
+                Upload PDF, JPG, JPEG, or PNG scans (up to 8 MB) for live OCR, marksheet breakdown, and scholarship requirement comparison.
               </p>
             </div>
 
-            {storageStatus.checked && !storageStatus.uploadAvailable && (
+            {storageStatus.checked && !storageStatus.permanentStorageAvailable && (
               <div
                 role="status"
-                className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs sm:text-sm text-amber-200 flex items-start gap-3"
+                className={`p-4 rounded-xl text-xs sm:text-sm flex items-start gap-3 ${
+                  storageStatus.analysisAvailable
+                    ? 'bg-amber-500/10 border border-amber-500/30 text-amber-100'
+                    : 'bg-rose-500/10 border border-rose-500/30 text-rose-200'
+                }`}
               >
-                <ShieldAlert className="w-5 h-5 shrink-0 mt-0.5 text-amber-400" />
+                <ShieldAlert
+                  className={`w-5 h-5 shrink-0 mt-0.5 ${
+                    storageStatus.analysisAvailable ? 'text-amber-400' : 'text-rose-400'
+                  }`}
+                />
                 <div className="space-y-1">
-                  <p className="font-semibold text-amber-100">
-                    Document Upload Temporarily Unavailable (Public Beta)
+                  <p className="font-semibold">
+                    {storageStatus.analysisAvailable
+                      ? 'Temporary In-Memory Analysis Active (Free Tier — Files Not Permanently Stored)'
+                      : 'Document Storage & AI Analysis Temporarily Unavailable'}
                   </p>
-                  <p className="text-xs text-amber-200/90 leading-relaxed">
-                    {storageStatus.reason} Scholarship requirement comparison, Scholarship Discovery, Eligibility Checker, AI Companion, Readiness Score, TrustGuard link checking, and Application Tracker remain fully active.
+                  <p className="text-xs opacity-90 leading-relaxed">
+                    {storageStatus.analysisAvailable
+                      ? 'Permanent Firebase Cloud Storage is disabled on the free tier. Your uploaded PDF/image is analyzed strictly in memory and discarded immediately after extraction — only structured analysis results and readiness checks are saved to your account.'
+                      : storageStatus.reason}
                   </p>
                 </div>
               </div>
@@ -916,7 +1206,7 @@ export default function DocumentIntelligencePage() {
                 <select
                   value={documentType}
                   onChange={(e) => setDocumentType(e.target.value)}
-                  disabled={!storageStatus.uploadAvailable}
+                  disabled={!storageStatus.checked || !canUploadOrAnalyze}
                   className="input-midnight w-full px-3.5 py-2.5 text-sm disabled:opacity-50"
                 >
                   {DOCUMENT_CATEGORIES.map((cat) => (
@@ -953,13 +1243,13 @@ export default function DocumentIntelligencePage() {
             <div
               onDragOver={(e) => {
                 e.preventDefault();
-                if (storageStatus.uploadAvailable) setDragActive(true);
+                if (storageStatus.checked && canUploadOrAnalyze) setDragActive(true);
               }}
               onDragLeave={() => setDragActive(false)}
               onDrop={handleDropFiles}
-              aria-disabled={!storageStatus.uploadAvailable}
+              aria-disabled={!storageStatus.checked || !canUploadOrAnalyze}
               className={`rounded-xl border border-dashed p-5 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
-                !storageStatus.uploadAvailable
+                !storageStatus.checked || !canUploadOrAnalyze
                   ? 'border-slate-800 bg-[#070C1B]/40 opacity-60 cursor-not-allowed'
                   : dragActive
                     ? 'border-indigo-400 bg-indigo-500/10'
@@ -972,12 +1262,19 @@ export default function DocumentIntelligencePage() {
                 </div>
                 <div className="space-y-0.5">
                   <p className="text-sm font-medium text-slate-100">
-                    {storageStatus.uploadAvailable
-                      ? 'Drag & drop scans here, or browse files'
-                      : 'Document binary upload paused during public beta'}
+                    {!storageStatus.checked
+                      ? 'Checking document analysis availability...'
+                      : canUploadOrAnalyze
+                        ? storageStatus.permanentStorageAvailable
+                          ? 'Drag & drop scans here, or browse files'
+                          : 'Drag & drop a scan for temporary in-memory AI analysis'
+                        : 'Document upload and AI analysis unavailable'}
                   </p>
                   <p className="text-xs text-slate-400">
                     Accepted formats: PDF, JPG, JPEG, PNG · Up to 8 MB per file
+                    {!storageStatus.permanentStorageAvailable && storageStatus.analysisAvailable
+                      ? ' · Files are processed in memory and not stored permanently'
+                      : ''}
                   </p>
                 </div>
               </div>
@@ -986,7 +1283,7 @@ export default function DocumentIntelligencePage() {
                 ref={uploadInputRef}
                 type="file"
                 multiple
-                disabled={!storageStatus.uploadAvailable}
+                disabled={!storageStatus.checked || !canUploadOrAnalyze}
                 accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
                 onChange={(e) => setSelectedFiles(Array.from(e.target.files ?? []))}
                 className="text-xs text-slate-300 file:mr-3 file:py-2 file:px-4 file:rounded-xl file:border file:border-slate-700 file:text-xs file:font-semibold file:bg-[#101933] file:text-slate-100 hover:file:bg-slate-800 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
@@ -1023,18 +1320,20 @@ export default function DocumentIntelligencePage() {
 
             <button
               type="submit"
-              disabled={!storageStatus.uploadAvailable || busy || selectedFiles.length === 0}
+              disabled={!storageStatus.checked || !canUploadOrAnalyze || busy || selectedFiles.length === 0}
               className="btn-primary-gradient inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold rounded-xl disabled:opacity-50 whitespace-nowrap"
             >
               <UploadCloud className="w-4 h-4" />
               <span>
                 {!storageStatus.checked
                   ? 'Checking Storage Availability...'
-                  : !storageStatus.uploadAvailable
-                    ? 'Document Upload Unavailable (Public Beta)'
+                  : !canUploadOrAnalyze
+                    ? 'Document Analysis Unavailable'
                     : busy
-                      ? 'Processing Pipeline Running...'
-                      : `Upload & Analyze ${selectedFiles.length > 1 ? `${selectedFiles.length} Documents` : 'Document'}`}
+                      ? 'Analyzing Document...'
+                      : storageStatus.permanentStorageAvailable
+                        ? `Upload & Analyze ${selectedFiles.length > 1 ? `${selectedFiles.length} Documents` : 'Document'}`
+                        : `Analyze ${selectedFiles.length > 1 ? `${selectedFiles.length} Documents` : 'Document'} (Temporary Mode)`}
               </span>
             </button>
           </form>
@@ -1192,6 +1491,14 @@ export default function DocumentIntelligencePage() {
                                   </span>
                                 </>
                               )}
+                              {!hasStoredBinary(docItem) && (
+                                <>
+                                  <span aria-hidden="true">·</span>
+                                  <span className="text-amber-300/90">
+                                    Extracted Only (File Not Stored)
+                                  </span>
+                                </>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -1200,11 +1507,22 @@ export default function DocumentIntelligencePage() {
                           <button
                             type="button"
                             onClick={() => void handlePreview(docItem)}
-                            disabled={previewLoadingId === docItem.id}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-200 bg-[#101933] border border-slate-700/80 rounded-lg hover:bg-slate-800 whitespace-nowrap"
+                            disabled={previewLoadingId === docItem.id || !hasStoredBinary(docItem)}
+                            title={
+                              hasStoredBinary(docItem)
+                                ? 'Preview original stored file'
+                                : 'Preview unavailable (original file was processed in temporary memory only)'
+                            }
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-200 bg-[#101933] border border-slate-700/80 rounded-lg hover:bg-slate-800 disabled:opacity-45 disabled:cursor-not-allowed whitespace-nowrap"
                           >
                             <Eye className="w-3.5 h-3.5" />
-                            <span>{previewLoadingId === docItem.id ? 'Loading...' : 'Preview'}</span>
+                            <span>
+                              {previewLoadingId === docItem.id
+                                ? 'Loading...'
+                                : hasStoredBinary(docItem)
+                                  ? 'Preview'
+                                  : 'No File Stored'}
+                            </span>
                           </button>
 
                           <button
@@ -1213,11 +1531,13 @@ export default function DocumentIntelligencePage() {
                               setReplaceTargetDoc(docItem);
                               replaceInputRef.current?.click();
                             }}
-                            disabled={docBusy || !storageStatus.uploadAvailable}
+                            disabled={docBusy || !canUploadOrAnalyze}
                             title={
-                              storageStatus.uploadAvailable
+                              storageStatus.permanentStorageAvailable
                                 ? 'Replace document file'
-                                : 'File replacement unavailable during public beta'
+                                : storageStatus.analysisAvailable
+                                  ? 'Select a new file for temporary in-memory analysis'
+                                  : 'Document analysis currently unavailable'
                             }
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-200 bg-[#101933] border border-slate-700/80 rounded-lg hover:bg-slate-800 disabled:opacity-50 whitespace-nowrap"
                           >
@@ -1228,12 +1548,21 @@ export default function DocumentIntelligencePage() {
                           <button
                             type="button"
                             onClick={() => void handleRetryAnalysis(docItem)}
-                            disabled={docBusy}
+                            disabled={
+                              docBusy ||
+                              (!hasStoredBinary(docItem) && !storageStatus.analysisAvailable)
+                            }
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-indigo-200 bg-indigo-500/15 border border-indigo-500/30 rounded-lg hover:bg-indigo-500/25 disabled:opacity-50 whitespace-nowrap"
                           >
                             <RefreshCw className={`w-3.5 h-3.5 ${docBusy ? 'animate-spin' : ''}`} />
                             <span>
-                              {effectiveProcStatus === 'Failed' ? 'Retry Failed Analysis' : 'Re-Analyze'}
+                              {hasStoredBinary(docItem) && storageStatus.permanentStorageAvailable
+                                ? effectiveProcStatus === 'Failed'
+                                  ? 'Retry Failed Analysis'
+                                  : 'Re-Analyze'
+                                : effectiveProcStatus === 'Failed'
+                                  ? 'Retry with File'
+                                  : 'Re-Analyze File'}
                             </span>
                           </button>
 

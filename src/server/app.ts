@@ -12,6 +12,7 @@ import { GEMINI_MODEL, getGeminiClient, Type } from './gemini.ts';
 import {
   analyzeDocumentWithGemini,
   answerDocumentQuestion,
+  decodeValidatedDocumentBase64,
   DocumentProcessingError,
   extractRealDocumentText,
   validateDocumentBinary,
@@ -27,6 +28,7 @@ import { scanPrivateVaultFiles } from './storageMigration.ts';
 import {
   CompanionError,
   fetchLiveScholarshipsFromDb,
+  resolveAuthenticatedStudentProfile,
   resolveStudentDatabaseSnapshot,
   sanitizeUntrustedText,
 } from './companionContext.ts';
@@ -120,47 +122,84 @@ const uploadSyncRateLimiter = createRateLimiter({
 
 app.use('/api', globalApiLimiter);
 
-interface CachedStorageStatus {
+export function isGeminiConfigured(): boolean {
+  return Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY');
+}
+
+export const documentPipelineDeps = {
+  validateDocumentBinary,
+  extractRealDocumentText,
+  analyzeDocumentWithGemini,
+  resolveAuthenticatedStudentProfile,
+  fetchLiveScholarshipsFromDb,
+};
+
+interface CachedBucketHealth {
+  permanentStorageAvailable: boolean;
+  checkedAtMs: number;
+}
+
+export interface DocumentStorageStatusPayload {
   uploadAvailable: boolean;
+  permanentStorageAvailable: boolean;
+  analysisAvailable: boolean;
+  mode: 'permanent-storage' | 'temporary-analysis';
   reason: string;
   checkedAtMs: number;
 }
 
-let cachedStorageStatus: CachedStorageStatus | null = null;
+let cachedBucketHealth: CachedBucketHealth | null = null;
 const STORAGE_STATUS_CACHE_TTL_MS = 60_000;
 
-export async function getCachedDocumentStorageStatus(): Promise<CachedStorageStatus> {
+export async function getCachedDocumentStorageStatus(): Promise<DocumentStorageStatusPayload> {
   const now = Date.now();
-  if (cachedStorageStatus && now - cachedStorageStatus.checkedAtMs < STORAGE_STATUS_CACHE_TTL_MS) {
-    return cachedStorageStatus;
+  if (!cachedBucketHealth || now - cachedBucketHealth.checkedAtMs >= STORAGE_STATUS_CACHE_TTL_MS) {
+    try {
+      const health = await checkFirebaseStorageHealth();
+      cachedBucketHealth = {
+        permanentStorageAvailable: Boolean(health.provisioned && health.reachable),
+        checkedAtMs: now,
+      };
+    } catch {
+      cachedBucketHealth = {
+        permanentStorageAvailable: false,
+        checkedAtMs: now,
+      };
+    }
   }
-  try {
-    const health = await checkFirebaseStorageHealth();
-    const uploadAvailable = Boolean(health.provisioned && health.reachable);
-    cachedStorageStatus = {
-      uploadAvailable,
-      reason: uploadAvailable
-        ? 'Private document storage is operational.'
-        : 'Document upload and binary storage are temporarily unavailable during the current public beta.',
-      checkedAtMs: now,
-    };
-  } catch {
-    cachedStorageStatus = {
-      uploadAvailable: false,
-      reason: 'Document upload and binary storage are temporarily unavailable during the current public beta.',
-      checkedAtMs: now,
-    };
-  }
-  return cachedStorageStatus;
+
+  const permanentStorageAvailable = cachedBucketHealth.permanentStorageAvailable;
+  const analysisAvailable = isGeminiConfigured();
+  const mode = permanentStorageAvailable ? 'permanent-storage' : 'temporary-analysis';
+  const reason = permanentStorageAvailable
+    ? 'Private Firebase Cloud Storage and AI document analysis are operational.'
+    : analysisAvailable
+      ? 'Permanent file storage is unavailable on the free tier. Temporary in-memory PDF/OCR upload & AI analysis is active: your extraction results are saved to your account, while the original file is discarded after analysis.'
+      : 'Permanent file storage and AI document analysis are currently unavailable.';
+
+  return {
+    uploadAvailable: permanentStorageAvailable,
+    permanentStorageAvailable,
+    analysisAvailable,
+    mode,
+    reason,
+    checkedAtMs: cachedBucketHealth.checkedAtMs,
+  };
 }
 
 // Health check
 app.get('/api/health', (_req: Request, res: Response) => {
+  const aiConfigured = isGeminiConfigured();
+  const permanentStorageAvailable = cachedBucketHealth
+    ? cachedBucketHealth.permanentStorageAvailable
+    : false;
   res.json({
     status: 'ok',
     service: 'grantly-ai-backend',
-    aiConfigured: Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY'),
-    documentUploadAvailable: cachedStorageStatus ? cachedStorageStatus.uploadAvailable : false,
+    aiConfigured,
+    documentUploadAvailable: permanentStorageAvailable,
+    permanentStorageAvailable,
+    documentAnalysisAvailable: aiConfigured,
     timestamp: new Date().toISOString(),
   });
 });
@@ -420,6 +459,9 @@ app.get('/api/documents/storage-status', requireAuth, async (_req: Authenticated
   const status = await getCachedDocumentStorageStatus();
   res.json({
     uploadAvailable: status.uploadAvailable,
+    permanentStorageAvailable: status.permanentStorageAvailable,
+    analysisAvailable: status.analysisAvailable,
+    mode: status.mode,
     reason: status.reason,
   });
 });
@@ -443,7 +485,7 @@ app.post('/api/documents/upload', requireAuth, uploadSyncRateLimiter, async (req
 
     const uid = req.user!.uid;
     const { docId, fileName, mimeType, base64Data } = parsed.data;
-    const buffer = Buffer.from(base64Data, 'base64');
+    const buffer = decodeValidatedDocumentBase64(base64Data);
     validateDocumentBinary(buffer, mimeType, fileName);
 
     const savedMeta = await saveDocumentToCloudStorage({
@@ -696,53 +738,185 @@ app.post(
 );
 
 const analyzeDocSchema = z.object({
-  documentType: z.string().min(1).max(120),
-  fileName: z.string().min(1).max(240),
-  mimeType: z.string().min(1).max(120),
-  base64Data: z.string().min(4),
+  documentType: z.string().trim().min(1).max(120),
+  fileName: z.string().trim().min(1).max(240),
+  mimeType: z.string().trim().min(1).max(120),
+  base64Data: z.string().min(1),
+  scholarshipId: z.string().trim().max(128).nullable().optional(),
   profile: z.record(z.string(), z.unknown()).nullable().optional(),
   scholarship: z.record(z.string(), z.unknown()).nullable().optional(),
 });
 
-app.post('/api/ai/analyze-document', requireAuth, aiRateLimiter, async (req: AuthenticatedRequest, res: Response) => {
-  const parsed = analyzeDocSchema.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: 'Invalid document analysis payload.' });
-    return;
+function buildSanitizedScholarshipContext(
+  matchedCatalog: Awaited<ReturnType<typeof fetchLiveScholarshipsFromDb>>[number] | undefined,
+  fallbackScholarship: Record<string, unknown> | null | undefined
+): Record<string, unknown> | null {
+  if (matchedCatalog) {
+    return {
+      id: matchedCatalog.id,
+      title: matchedCatalog.title,
+      provider: matchedCatalog.provider,
+      scholarshipType: matchedCatalog.scholarshipType,
+      incomeLimitInr: matchedCatalog.incomeLimitInr,
+      minMarksPercent: matchedCatalog.minMarksPercent,
+      allowedCategories: matchedCatalog.allowedCategories,
+      eligibleStates: matchedCatalog.eligibleStates,
+      educationLevels: matchedCatalog.educationLevels,
+      requiredDocuments: matchedCatalog.requiredDocuments,
+      applicationDeadline: matchedCatalog.applicationDeadline,
+      verificationStatus: matchedCatalog.verificationStatus,
+      officialUrl: matchedCatalog.officialUrl,
+    };
   }
+  if (!fallbackScholarship) return null;
+  return {
+    ...(typeof fallbackScholarship.id === 'string' ? { id: fallbackScholarship.id.slice(0, 128) } : {}),
+    ...(typeof fallbackScholarship.title === 'string'
+      ? { title: fallbackScholarship.title.slice(0, 240) }
+      : {}),
+    ...(typeof fallbackScholarship.provider === 'string'
+      ? { provider: fallbackScholarship.provider.slice(0, 200) }
+      : {}),
+    ...(typeof fallbackScholarship.incomeLimitInr === 'number'
+      ? { incomeLimitInr: fallbackScholarship.incomeLimitInr }
+      : {}),
+    ...(typeof fallbackScholarship.minMarksPercent === 'number'
+      ? { minMarksPercent: fallbackScholarship.minMarksPercent }
+      : {}),
+    ...(Array.isArray(fallbackScholarship.requiredDocuments)
+      ? { requiredDocuments: fallbackScholarship.requiredDocuments.slice(0, 25) }
+      : {}),
+    ...(Array.isArray(fallbackScholarship.allowedCategories)
+      ? { allowedCategories: fallbackScholarship.allowedCategories.slice(0, 15) }
+      : {}),
+    ...(Array.isArray(fallbackScholarship.eligibleStates)
+      ? { eligibleStates: fallbackScholarship.eligibleStates.slice(0, 40) }
+      : {}),
+  };
+}
 
-  try {
-    const { documentType, fileName, mimeType, base64Data, profile, scholarship } = parsed.data;
-    const buffer = Buffer.from(base64Data, 'base64');
-    const normalizedMime = validateDocumentBinary(buffer, mimeType, fileName);
-    const rawExtraction = await extractRealDocumentText(buffer, normalizedMime);
-    const result = await analyzeDocumentWithGemini({
-      buffer,
-      rawExtraction,
-      declaredCategory: documentType,
-      fileName,
-      studentProfile: profile ?? null,
-      selectedScholarship: scholarship ?? null,
-    });
-
-    res.json({
-      processingStatus: result.processingStatus,
-      verificationStatus: result.verificationStatus,
-      extractionMethod: rawExtraction.extractionMethod,
-      pageCount: rawExtraction.pageCount,
-      rawTextPreview: result.rawTextPreview,
-      disclaimer: result.disclaimer,
-      analysis: result.analysis,
-    });
-  } catch (error) {
-    if (error instanceof DocumentProcessingError) {
-      res.status(error.httpStatus).json({ error: error.message, code: error.code });
+app.post(
+  '/api/ai/analyze-document',
+  requireAuth,
+  uploadSyncRateLimiter,
+  aiRateLimiter,
+  async (req: AuthenticatedRequest, res: Response) => {
+    const parsed = analyzeDocSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Invalid document analysis payload.' });
       return;
     }
-    console.error('Document analysis error:', error);
-    res.status(500).json({ error: sanitizeErrorForClient(error, 'Failed to analyze document.') });
+
+    let buffer: Buffer | null = null;
+    try {
+      const uid = req.user!.uid;
+      const { documentType, fileName, mimeType, base64Data, scholarshipId, profile, scholarship } =
+        parsed.data;
+
+      // 1. Validate base64 & binary signatures strictly in memory (never written to disk)
+      buffer = decodeValidatedDocumentBase64(base64Data);
+      const normalizedMime = documentPipelineDeps.validateDocumentBinary(
+        buffer,
+        mimeType,
+        fileName
+      );
+
+      // 2. Enforce UID isolation & fetch server-verified student profile and permitted scholarship context
+      const requestedScholarshipId =
+        (typeof scholarshipId === 'string' && scholarshipId.trim()) ||
+        (scholarship && typeof scholarship.id === 'string' ? scholarship.id.trim() : '');
+
+      const [resolvedProfile, liveScholarships] = await Promise.all([
+        documentPipelineDeps.resolveAuthenticatedStudentProfile(uid, req.idToken, profile ?? null),
+        requestedScholarshipId
+          ? documentPipelineDeps.fetchLiveScholarshipsFromDb().catch(() => [])
+          : Promise.resolve([]),
+      ]);
+
+      const matchedScholarship = requestedScholarshipId
+        ? liveScholarships.find((s) => s.id === requestedScholarshipId)
+        : undefined;
+      const permittedScholarship = buildSanitizedScholarshipContext(
+        matchedScholarship,
+        scholarship
+      );
+
+      // 3. Extract text / OCR and run Gemini multimodal analysis in memory
+      const rawExtraction = await documentPipelineDeps.extractRealDocumentText(
+        buffer,
+        normalizedMime
+      );
+      const result = await documentPipelineDeps.analyzeDocumentWithGemini({
+        buffer,
+        rawExtraction,
+        declaredCategory: documentType,
+        fileName,
+        studentProfile: (resolvedProfile as Record<string, unknown> | null) ?? null,
+        selectedScholarship: permittedScholarship,
+      });
+
+      res.json({
+        processingStatus: result.processingStatus,
+        verificationStatus: result.verificationStatus,
+        extractionMethod: rawExtraction.extractionMethod,
+        pageCount: rawExtraction.pageCount,
+        rawTextPreview: result.rawTextPreview,
+        disclaimer: result.disclaimer,
+        storageMode: 'temporary-in-memory',
+        permanentlyStored: false,
+        analysis: result.analysis,
+      });
+    } catch (error) {
+      if (error instanceof DocumentProcessingError) {
+        res.status(error.httpStatus).json({ error: error.message, code: error.code });
+        return;
+      }
+      if (error instanceof CompanionError) {
+        const gatewaySafeStatus =
+          error.code === 'AI_TIMEOUT'
+            ? 408
+            : error.code === 'AI_HIGH_DEMAND'
+              ? 429
+              : error.httpStatus >= 502 && error.httpStatus <= 504
+                ? 500
+                : error.httpStatus;
+        res.status(gatewaySafeStatus).json({
+          error: error.message,
+          code: error.code,
+          upstreamStatus: error.httpStatus,
+        });
+        return;
+      }
+
+      const classified = classifyGeminiError(error);
+      const gatewaySafeStatus =
+        classified.code === 'AI_TIMEOUT'
+          ? 408
+          : classified.code === 'AI_RATE_LIMITED' || classified.code === 'AI_HIGH_DEMAND'
+            ? 429
+            : 500;
+      console.warn(
+        `[/api/ai/analyze-document] error code=${classified.code} detail=${sanitizeErrorForClient(error, 'Analysis failed')}`
+      );
+      res.status(gatewaySafeStatus).json({
+        error:
+          classified.code === 'AI_CONFIG_ERROR'
+            ? 'Document AI analysis service is temporarily unavailable due to server configuration.'
+            : classified.code === 'AI_TIMEOUT'
+              ? 'Document analysis timed out. Please retry with a smaller or clearer file.'
+              : classified.code === 'AI_RATE_LIMITED'
+                ? 'AI analysis rate limit reached. Please wait a few seconds and retry.'
+                : classified.code === 'AI_HIGH_DEMAND'
+                  ? 'The AI model is experiencing high demand. Please retry shortly.'
+                  : 'Document analysis failed. Please ensure the file is clear and retry.',
+        code: classified.code,
+      });
+    } finally {
+      // Explicitly release temporary in-memory binary reference after processing
+      buffer = null;
+    }
   }
-});
+);
 
 // 4. Scholarship Readiness Intelligence Engine (Server-Authoritative Scoring + Grounded AI Explanation)
 const readinessStudentContextSchema = z.object({

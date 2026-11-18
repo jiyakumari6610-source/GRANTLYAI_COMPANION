@@ -402,7 +402,7 @@ export async function getDocuments(userId: string): Promise<DocumentRecord[]> {
 
 export async function createDocumentRecord(record: DocumentRecord): Promise<void> {
   try {
-    await setDoc(doc(db, 'documents', record.id), record);
+    await setDoc(doc(db, 'documents', record.id), stripUndefinedDeep(record));
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, `documents/${record.id}`);
   }
@@ -413,7 +413,7 @@ export async function updateDocumentFields(
   fields: Partial<Omit<DocumentRecord, 'id' | 'userId' | 'createdAt'>> & { updatedAt: string }
 ): Promise<void> {
   try {
-    await updateDoc(doc(db, 'documents', id), fields);
+    await updateDoc(doc(db, 'documents', id), stripUndefinedDeep(fields));
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `documents/${id}`);
   }
@@ -469,7 +469,7 @@ export async function getDocumentAnalyses(userId: string): Promise<DocumentAnaly
 
 export async function saveDocumentAnalysis(analysis: DocumentAnalysis): Promise<void> {
   try {
-    await setDoc(doc(db, 'document_analysis', analysis.id), analysis);
+    await setDoc(doc(db, 'document_analysis', analysis.id), stripUndefinedDeep(analysis));
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, `document_analysis/${analysis.id}`);
   }

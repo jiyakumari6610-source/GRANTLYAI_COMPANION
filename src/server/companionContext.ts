@@ -367,6 +367,21 @@ export function validateAndExtractClientSnapshot(
   };
 }
 
+export async function resolveAuthenticatedStudentProfile(
+  authUid: string,
+  idToken: string | undefined,
+  clientProfile?: Record<string, unknown> | null
+): Promise<StudentProfile | null> {
+  assertRecordOwnership(clientProfile ?? null, authUid, 'profile');
+  if (idToken) {
+    const profRes = await fetchUserProfileRest(authUid, idToken);
+    if (profRes.ok) {
+      return profRes.profile;
+    }
+  }
+  return clientProfile ? (clientProfile as unknown as StudentProfile) : null;
+}
+
 export async function resolveStudentDatabaseSnapshot(
   authUid: string,
   idToken: string | undefined,

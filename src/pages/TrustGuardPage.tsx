@@ -1047,24 +1047,43 @@ export default function TrustGuardPage() {
                                       : ''}
                                   </p>
                                 </div>
-                                <button
-                                  type="button"
-                                  disabled={previewBusyId === docRes.documentId}
-                                  onClick={() => {
-                                    const fullDoc = documents.find((d) => d.id === docRes.documentId);
-                                    void handlePreviewPrivateDoc(
-                                      docRes.documentId,
-                                      docRes.fileName,
-                                      fullDoc?.mimeType
-                                    );
-                                  }}
-                                  className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-slate-200 bg-[#101933] border border-slate-700/80 hover:bg-slate-800 rounded-lg shrink-0 whitespace-nowrap"
-                                >
-                                  <Eye className="w-3 h-3" />
-                                  <span>
-                                    {previewBusyId === docRes.documentId ? 'Loading...' : 'Preview'}
-                                  </span>
-                                </button>
+                                {(() => {
+                                  const fullDoc = documents.find((d) => d.id === docRes.documentId);
+                                  const hasBinary = Boolean(
+                                    fullDoc &&
+                                      (fullDoc.storageProvider === 'firebase-storage' ||
+                                        fullDoc.storageProvider === 'private-vault') &&
+                                      fullDoc.storagePath !== 'temporary-in-memory'
+                                  );
+                                  return (
+                                    <button
+                                      type="button"
+                                      disabled={previewBusyId === docRes.documentId || !hasBinary}
+                                      title={
+                                        hasBinary
+                                          ? 'Preview stored document'
+                                          : 'Preview unavailable (analyzed in temporary memory only)'
+                                      }
+                                      onClick={() => {
+                                        void handlePreviewPrivateDoc(
+                                          docRes.documentId,
+                                          docRes.fileName,
+                                          fullDoc?.mimeType
+                                        );
+                                      }}
+                                      className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-slate-200 bg-[#101933] border border-slate-700/80 hover:bg-slate-800 rounded-lg shrink-0 whitespace-nowrap disabled:opacity-45 disabled:cursor-not-allowed"
+                                    >
+                                      <Eye className="w-3 h-3" />
+                                      <span>
+                                        {previewBusyId === docRes.documentId
+                                          ? 'Loading...'
+                                          : hasBinary
+                                            ? 'Preview'
+                                            : 'Temp Only'}
+                                      </span>
+                                    </button>
+                                  );
+                                })()}
                               </div>
 
                               <p

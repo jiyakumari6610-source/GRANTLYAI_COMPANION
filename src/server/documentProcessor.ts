@@ -10,6 +10,7 @@ import { sanitizeUntrustedText } from './companionContext.ts';
 import { GEMINI_MODEL, getGeminiClient, Type } from './gemini.ts';
 
 export const MAX_DOCUMENT_BYTES = 8 * 1024 * 1024; // 8 MB
+export const MAX_DOCUMENT_BASE64_CHARS = Math.ceil((MAX_DOCUMENT_BYTES / 3) * 4) + 1024;
 
 export class DocumentProcessingError extends Error {
   code: 'INVALID_FORMAT' | 'FILE_TOO_LARGE' | 'PASSWORD_PROTECTED' | 'CORRUPTED_DOCUMENT' | 'UNREADABLE_CONTENT';
@@ -45,6 +46,45 @@ export function maskSensitiveNumbers(input: string): string {
   if (!input) return input;
   // Mask 12-digit Aadhaar numbers formatted as 1234 5678 9012, 1234-5678-9012, or 123456789012
   return input.replace(/\b(\d{4})[\s-]?(\d{4})[\s-]?(\d{4})\b/g, 'XXXX-XXXX-$3');
+}
+
+export function decodeValidatedDocumentBase64(base64Data: string): Buffer {
+  if (typeof base64Data !== 'string') {
+    throw new DocumentProcessingError('INVALID_FORMAT', 'Uploaded document payload must be base64 text.');
+  }
+  const normalized = base64Data.replace(/\s+/g, '');
+  if (!normalized) {
+    throw new DocumentProcessingError('CORRUPTED_DOCUMENT', 'Uploaded file is empty (0 bytes).');
+  }
+  if (normalized.length > MAX_DOCUMENT_BASE64_CHARS) {
+    throw new DocumentProcessingError(
+      'FILE_TOO_LARGE',
+      'File exceeds the 8 MB maximum upload limit.',
+      413
+    );
+  }
+  if (
+    normalized.length < 4 ||
+    normalized.length % 4 !== 0 ||
+    !/^[A-Za-z0-9+/]+={0,2}$/.test(normalized)
+  ) {
+    throw new DocumentProcessingError(
+      'CORRUPTED_DOCUMENT',
+      'Uploaded document payload contains invalid base64 data.'
+    );
+  }
+  const buffer = Buffer.from(normalized, 'base64');
+  if (buffer.byteLength === 0) {
+    throw new DocumentProcessingError('CORRUPTED_DOCUMENT', 'Uploaded file is empty (0 bytes).');
+  }
+  if (buffer.byteLength > MAX_DOCUMENT_BYTES) {
+    throw new DocumentProcessingError(
+      'FILE_TOO_LARGE',
+      'File exceeds the 8 MB maximum upload limit.',
+      413
+    );
+  }
+  return buffer;
 }
 
 export function validateDocumentBinary(
@@ -466,12 +506,35 @@ export async function analyzeDocumentWithGemini(params: {
     },
   });
 
-  const rawJsonText = response.text?.trim();
-  if (!rawJsonText) {
-    throw new Error('Document intelligence model returned empty output.');
+  const responseObj = response as {
+    text?: string;
+    promptFeedback?: { blockReason?: string };
+    candidates?: Array<{ finishReason?: string }>;
+  };
+  const blockReason = responseObj.promptFeedback?.blockReason;
+  const finishReason = responseObj.candidates?.[0]?.finishReason;
+  if (
+    blockReason ||
+    finishReason === 'SAFETY' ||
+    finishReason === 'RECITATION' ||
+    finishReason === 'PROHIBITED_CONTENT'
+  ) {
+    throw new Error(
+      'Document analysis was blocked by model safety filters. Please ensure the file is a clear academic or scholarship document.'
+    );
   }
 
-  const parsed = JSON.parse(rawJsonText) as GeminiDocumentExtractionOutput;
+  const rawJsonText = response.text?.trim();
+  if (!rawJsonText) {
+    throw new Error('Document intelligence model returned empty output. Please retry.');
+  }
+
+  let parsed: GeminiDocumentExtractionOutput;
+  try {
+    parsed = JSON.parse(rawJsonText) as GeminiDocumentExtractionOutput;
+  } catch {
+    throw new Error('Document intelligence model returned malformed output. Please retry.');
+  }
 
   // Normalize enums & mask sensitive numbers cleanly
   const allowedReadability = ['Readable', 'Partially Readable', 'Unreadable'] as const;
