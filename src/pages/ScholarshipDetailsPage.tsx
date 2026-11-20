@@ -367,6 +367,11 @@ export default function ScholarshipDetailsPage() {
               )}
             </div>
             {scholarship.sourceNotes && <p className="text-slate-400">{scholarship.sourceNotes}</p>}
+            <p className="text-slate-300 pt-1">
+              {scholarship.id === 'jharkhand-ekalyan-post-matric'
+                ? 'Scholarship information is provided for guidance. Final eligibility and application approval are determined by the official E-Kalyan portal and concerned authorities.'
+                : 'Scholarship information is provided for guidance. Final eligibility and application approval are determined by the official scholarship portal and concerned authorities.'}
+            </p>
           </div>
         </div>
 

@@ -180,12 +180,14 @@ export function filterAndSortScholarships(
       }
 
       if (filters.category !== 'All') {
-        if (
-          scholarship.allowedCategories &&
-          scholarship.allowedCategories.length > 0 &&
-          !scholarship.allowedCategories.includes(filters.category)
-        ) {
-          return false;
+        if (scholarship.allowedCategories && scholarship.allowedCategories.length > 0) {
+          const matchesCat =
+            scholarship.allowedCategories.includes(filters.category) ||
+            (filters.category === 'BC' && scholarship.allowedCategories.includes('OBC-NCL')) ||
+            (filters.category === 'OBC-NCL' && scholarship.allowedCategories.includes('BC'));
+          if (!matchesCat) {
+            return false;
+          }
         }
       }
 
@@ -232,6 +234,10 @@ export function filterAndSortScholarships(
           scholarship.benefitsSummary ?? '',
           scholarship.financialBenefitsText ?? '',
           scholarship.eligibilitySummary ?? '',
+          scholarship.sourceNotes ?? '',
+          ...(scholarship.eligibleStates ?? []),
+          ...(scholarship.allowedCategories ?? []),
+          ...(scholarship.educationLevels ?? []),
           ...(scholarship.eligibleCourses ?? []),
         ]
           .join(' ')

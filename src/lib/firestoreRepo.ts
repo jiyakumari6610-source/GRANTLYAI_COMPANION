@@ -11,7 +11,10 @@ import {
   where,
   writeBatch,
 } from 'firebase/firestore';
-import { VERIFIED_INDIAN_SCHOLARSHIPS } from '../data/verifiedScholarships.ts';
+import {
+  mergeCatalogWithVerifiedAdditions,
+  VERIFIED_INDIAN_SCHOLARSHIPS,
+} from '../data/verifiedScholarships.ts';
 import {
   AICompanionValidationError,
   normalizeRetrievedMessages,
@@ -162,7 +165,8 @@ export async function getScholarships(): Promise<{
         if (snap.empty) {
           return { items: [], isEmptyDatabase: true };
         }
-        const items = snap.docs.map((d) => d.data() as Scholarship);
+        const firestoreItems = snap.docs.map((d) => d.data() as Scholarship);
+        const items = mergeCatalogWithVerifiedAdditions(firestoreItems);
         return { items, isEmptyDatabase: false };
       } catch (error) {
         handleFirestoreError(error, OperationType.LIST, 'scholarships');
@@ -184,7 +188,11 @@ export async function getScholarshipById(id: string): Promise<Scholarship | null
     async () => {
       try {
         const snap = await withFirestoreOfflineRetry(() => getDoc(doc(db, 'scholarships', id)));
-        return snap.exists() ? (snap.data() as Scholarship) : null;
+        if (snap.exists()) {
+          return snap.data() as Scholarship;
+        }
+        const catalog = await getScholarships();
+        return catalog.items.find((item) => item.id === id) ?? null;
       } catch (error) {
         handleFirestoreError(error, OperationType.GET, `scholarships/${id}`);
       }

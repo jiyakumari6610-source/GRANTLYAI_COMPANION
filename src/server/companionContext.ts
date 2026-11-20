@@ -1,6 +1,7 @@
 import { getApps, initializeApp } from 'firebase/app';
 import { collection, getDocs, getFirestore } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json' with { type: 'json' };
+import { mergeCatalogWithVerifiedAdditions } from '../data/verifiedScholarships.ts';
 import {
   computeTrackerOverviewCounts,
   evaluateTrackedApplication,
@@ -53,7 +54,9 @@ export async function fetchLiveScholarshipsFromDb(): Promise<Scholarship[]> {
   try {
     const db = getServerFirestoreDb();
     const snap = await getDocs(collection(db, 'scholarships'));
-    return snap.docs.map((d) => d.data() as Scholarship);
+    if (snap.empty) return [];
+    const firestoreItems = snap.docs.map((d) => d.data() as Scholarship);
+    return mergeCatalogWithVerifiedAdditions(firestoreItems);
   } catch (err) {
     console.error('Failed to read live scholarships collection:', err);
     throw new CompanionError(

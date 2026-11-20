@@ -4,10 +4,11 @@ const VERIFIED_DATE = '2026-11-12';
 const SEED_TIMESTAMP = '2026-11-12T00:00:00.000Z';
 
 /**
- * 16 authentic, publicly documented Indian scholarship schemes verified against official portals
+ * 17 authentic, publicly documented Indian scholarship schemes verified against official portals
  * (scholarships.gov.in, education.gov.in, aicte-india.org, online-inspire.gov.in, ugc.gov.in,
- * svmcm.wb.gov.in, mahadbt.maharashtra.gov.in, scholarships.reliancefoundation.org,
- * azimpremjifoundation.org, tatatrusts.org, hdfcbank.com).
+ * svmcm.wb.gov.in, mahadbt.maharashtra.gov.in, ekalyan.cgg.gov.in, jharkhand.gov.in,
+ * finance.jharkhand.gov.in, scholarships.reliancefoundation.org, azimpremjifoundation.org,
+ * tatatrusts.org, hdfcbank.com).
  *
  * Cycle application dates vary by academic year and are marked "Check Official Portal" /
  * "Status unknown" until confirmed live by an administrator.
@@ -753,4 +754,76 @@ export const VERIFIED_INDIAN_SCHOLARSHIPS: Scholarship[] = [
     createdAt: SEED_TIMESTAMP,
     updatedAt: SEED_TIMESTAMP,
   },
+  {
+    id: 'jharkhand-ekalyan-post-matric',
+    title: 'Jharkhand E-Kalyan Post-Matric Scholarship (Within State & Outside State)',
+    provider:
+      'Department of Scheduled Tribe, Scheduled Caste, Minority and Backward Class Welfare, Government of Jharkhand',
+    scholarshipType: 'State Government',
+    description:
+      'Official Jharkhand scholarship portal (ekalyan.cgg.gov.in) Post-Matric scheme supporting Scheduled Tribe (ST), Scheduled Caste (SC), and Backward Class (BC) students domiciled in Jharkhand for recognized post-matriculation studies within Jharkhand and at registered institutions outside Jharkhand.',
+    benefitsSummary:
+      'Tuition and compulsory non-refundable fee reimbursement plus academic maintenance allowance as per Government of Jharkhand rate slabs; exact amount varies by course group, fee structure, and hosteller/day-scholar status.',
+    financialBenefitsText:
+      'Compulsory fee reimbursement & maintenance allowance based on course category and hosteller/day-scholar status (confirm rate chart on ekalyan.cgg.gov.in).',
+    annualAwardInr: null,
+    eligibilitySummary:
+      'Permanent resident (domicile) of Jharkhand belonging to ST, SC, or BC (Backward Class / OBC-NCL equivalent) category, pursuing a recognized post-matric course within or outside Jharkhand with family annual income up to ₹2,50,000 (confirm current session criteria and renewal rules on ekalyan.cgg.gov.in).',
+    academicRequirements:
+      'Passed Matriculation (Class 10) or previous qualifying examination and enrolled as a regular student in a recognized post-matric institution (Fresh or Renewal per official portal rules).',
+    minIncomeLimitInr: 0,
+    incomeLimitInr: 250000,
+    educationLevels: [
+      'Class 11-12',
+      'Diploma / Polytechnic',
+      'Undergraduate (UG)',
+      'Postgraduate (PG)',
+      'PhD / Doctoral',
+    ],
+    eligibleCourses: [
+      'All Recognized Post-Matric Courses (Within & Outside Jharkhand)',
+      'Intermediate (Class 11-12) & ITI',
+      'Diploma / Polytechnic',
+      'General UG & PG (B.A / B.Sc / B.Com / M.A / M.Sc / M.Com)',
+      'Engineering, Medical, B.Ed & Professional Degrees',
+    ],
+    allowedCategories: ['ST', 'SC', 'BC', 'OBC-NCL'],
+    eligibleStates: ['Jharkhand'],
+    minMarksPercent: 0,
+    genderRestriction: 'All',
+    disabilityRequired: false,
+    requiredDocuments: [
+      'Aadhaar Card',
+      'Domicile / Residence Certificate',
+      'Caste / Category / EWS Certificate',
+      'Income Certificate (Tehsildar / Competent Authority)',
+      'Previous Academic Marksheet',
+      'Current Year Bonafide / Fee Receipt',
+      'Bank Passbook (Aadhaar-Seeded)',
+    ],
+    applicationStartDate: 'Check official portal for current application dates',
+    applicationDeadline: 'Check Official Portal',
+    applicationProcess:
+      '1. Register and apply online via ekalyan.cgg.gov.in under Post-Matric (Within State or Outside State) scholarship. 2. Upload Jharsewa Caste, Income, and Jharkhand Residential certificates, bonafide with fee structure, and previous marksheet. 3. Ensure Aadhaar-seeded NPCI bank account and complete institutional/INOs & district verification.',
+    applicationStatus: 'Status unknown',
+    deadlineStatus: 'Check Official Portal',
+    officialUrl: 'https://ekalyan.cgg.gov.in/',
+    officialSourceUrl: 'https://www.jharkhand.gov.in/',
+    verificationStatus: 'Verified',
+    lastVerifiedDate: '2026-11-18',
+    sourceNotes:
+      'Verified govt-reported details: E-Kalyan portal (https://ekalyan.cgg.gov.in/) is the application & final eligibility authority; Jharkhand govt portal (https://www.jharkhand.gov.in/) & Jharkhand Economic Survey 2025–26 (https://finance.jharkhand.gov.in/pdf/JES_ExecutiveSummary2025_26.pdf) support the ₹2,50,000 annual family income ceiling for BC Post-Matric Scholarship. Confirm via current E-Kalyan session guidelines: live cycle open/close dates, exact fee/allowance rate slabs, and session-specific BC/SC/ST/renewal rules.',
+    sourceEvidence:
+      'Primary Application & Final Authority: https://ekalyan.cgg.gov.in/ | Official State Reference: https://www.jharkhand.gov.in/ | Supporting Income Ceiling Source (BC ₹2,50,000): Jharkhand Economic Survey 2025–26 (https://finance.jharkhand.gov.in/pdf/JES_ExecutiveSummary2025_26.pdf). Verified government-reported scope covers Jharkhand domicile ST/SC/BC Post-Matric study (within & outside state). Details requiring current E-Kalyan session confirmation: active cycle dates, course/hosteller maintenance slabs, and session-specific renewal/eligibility rules.',
+    createdAt: SEED_TIMESTAMP,
+    updatedAt: SEED_TIMESTAMP,
+  },
 ];
+
+export function mergeCatalogWithVerifiedAdditions(existing: Scholarship[]): Scholarship[] {
+  if (existing.length === 0) return [];
+  const seenIds = new Set(existing.map((item) => item.id));
+  const additions = VERIFIED_INDIAN_SCHOLARSHIPS.filter((item) => !seenIds.has(item.id));
+  return additions.length > 0 ? [...existing, ...additions] : existing;
+}
+

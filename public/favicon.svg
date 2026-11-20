@@ -1,0 +1,26 @@
+<svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="grantlyLogoGrad" x1="2" y1="2" x2="34" y2="34" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6366F1" />
+      <stop offset="0.55" stop-color="#3B82F6" />
+      <stop offset="1" stop-color="#8B5CF6" />
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="32" height="32" rx="9" fill="#050914" />
+  <rect x="2" y="2" width="32" height="32" rx="9" fill="url(#grantlyLogoGrad)" fill-opacity="0.16" stroke="url(#grantlyLogoGrad)" stroke-width="1.5" />
+  <path
+    d="M18 8.5L26 12.7V18.8C26 23.4 22.5 27.1 18 28.5C13.5 27.1 10 23.4 10 18.8V12.7L18 8.5Z"
+    fill="url(#grantlyLogoGrad)"
+    fill-opacity="0.22"
+    stroke="#A5B4FC"
+    stroke-width="1.5"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M14.8 18.2L17.1 20.5L21.8 15.6"
+    stroke="#E0E7FF"
+    stroke-width="1.8"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+</svg>

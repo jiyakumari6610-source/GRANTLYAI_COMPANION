@@ -869,8 +869,17 @@ export async function listScholarshipsAdminServer(params: { idToken: string }) {
     listCollectionRest<Scholarship>('scholarships', params.idToken),
     listCollectionRest<ScholarshipEligibilityRule>('scholarship_eligibility_rules', params.idToken),
   ]);
+  const merged =
+    scholarships.length === 0
+      ? []
+      : [
+          ...scholarships,
+          ...VERIFIED_INDIAN_SCHOLARSHIPS.filter(
+            (v) => !scholarships.some((existing) => existing.id === v.id)
+          ),
+        ];
   return {
-    scholarships: scholarships.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+    scholarships: merged.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
     rules,
   };
 }

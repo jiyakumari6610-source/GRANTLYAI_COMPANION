@@ -10,8 +10,12 @@ import {
 import type { Scholarship, StudentProfile } from '../src/types/database.ts';
 
 function runPhase2Tests() {
-  // 1. Verify all 16 authentic scholarships & 8 categories
-  assert.equal(VERIFIED_INDIAN_SCHOLARSHIPS.length, 16, 'Expected 16 verified scholarships');
+  // 1. Verify all 17 authentic scholarships & 8 categories (16 original + Jharkhand E-Kalyan)
+  assert.equal(VERIFIED_INDIAN_SCHOLARSHIPS.length, 17, 'Expected 17 verified scholarships');
+  assert.ok(
+    VERIFIED_INDIAN_SCHOLARSHIPS.some((s) => s.id === 'jharkhand-ekalyan-post-matric'),
+    'Expected Jharkhand E-Kalyan Post-Matric Scholarship in catalog'
+  );
 
   const requiredCategories = [
     'Central Government',

@@ -563,7 +563,11 @@ export function evaluateDeterministicEligibility(
       detail: 'Open to all social categories without category-specific restriction.',
     });
   } else if (profile?.category) {
-    const ok = allowedCategories.includes(profile.category);
+    const profileCategory = String(profile.category).trim();
+    const ok =
+      allowedCategories.includes(profileCategory) ||
+      (profileCategory === 'OBC-NCL' && allowedCategories.includes('BC')) ||
+      (profileCategory === 'BC' && allowedCategories.includes('OBC-NCL'));
     criteria.push({
       criterion: 'Social Category',
       status: ok ? 'Passed' : 'Failed',

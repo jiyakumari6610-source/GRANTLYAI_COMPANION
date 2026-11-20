@@ -19,6 +19,7 @@ import {
   X,
 } from 'lucide-react';
 import { SkeletonCard } from '../ui/MotionPrimitives.tsx';
+import { VERIFIED_INDIAN_SCHOLARSHIPS } from '../../data/verifiedScholarships.ts';
 import {
   ALLOWED_RULE_KEYS,
   PHASE9_VERIFICATION_STATUSES,
@@ -359,7 +360,7 @@ export function AdminScholarshipsPanel({
             className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-200 bg-[#101933] border border-slate-700/80 hover:bg-slate-800 rounded-xl transition-colors disabled:opacity-60 whitespace-nowrap shrink-0"
           >
             <Database className="w-3.5 h-3.5 text-indigo-400" />
-            <span>{seeding ? 'Syncing...' : 'Sync 16 Official Schemes'}</span>
+            <span>{seeding ? 'Syncing...' : `Sync ${VERIFIED_INDIAN_SCHOLARSHIPS.length} Official Schemes`}</span>
           </button>
           <button
             type="button"

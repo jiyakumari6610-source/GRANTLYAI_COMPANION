@@ -14,6 +14,7 @@ import {
 import { AppShell } from '../components/AppShell.tsx';
 import { PageTransition, SkeletonCard } from '../components/ui/MotionPrimitives.tsx';
 import { useAuth } from '../context/AuthContext.tsx';
+import { VERIFIED_INDIAN_SCHOLARSHIPS } from '../data/verifiedScholarships.ts';
 import { postProtectedAi } from '../lib/apiClient.ts';
 import {
   findDuplicateActiveApplication,
@@ -65,7 +66,7 @@ const EDUCATION_LEVELS = [
   'PhD / Doctoral',
 ] as const;
 
-const SOCIAL_CATEGORIES = ['All', 'General', 'OBC-NCL', 'SC', 'ST', 'EWS', 'Minority'] as const;
+const SOCIAL_CATEGORIES = ['All', 'General', 'OBC-NCL', 'BC', 'SC', 'ST', 'EWS', 'Minority'] as const;
 
 const APPLICATION_STATUS_FILTERS = [
   'All',
@@ -163,35 +164,60 @@ const DiscoveryScholarshipCard = memo(function DiscoveryScholarshipCard({
           {scholarship.financialBenefitsText || scholarship.benefitsSummary || scholarship.description}
         </p>
 
-        <div className="text-xs text-slate-400 flex flex-wrap gap-x-3 gap-y-1">
-          <span>
-            Income Cap:{' '}
-            <strong className="font-mono-num text-slate-200">
-              {typeof scholarship.incomeLimitInr === 'number'
-                ? `₹${scholarship.incomeLimitInr.toLocaleString('en-IN')}`
-                : 'None specified'}
-            </strong>
-          </span>
-          <span aria-hidden="true">·</span>
-          <span>
-            Profile Match:{' '}
-            <strong
-              className={
-                eligibility.overallStatus === 'Eligible'
-                  ? 'text-emerald-400'
-                  : eligibility.overallStatus === 'Potentially Eligible'
-                    ? 'text-amber-300'
-                    : eligibility.overallStatus === 'Insufficient Information'
-                      ? 'text-slate-200'
-                      : eligibility.overallStatus === 'Scholarship Status Unverified'
-                        ? 'text-amber-300'
-                        : 'text-rose-400'
-              }
-            >
-              {eligibility.overallStatus}
-            </strong>{' '}
-            <span className="font-mono-num text-slate-400">({eligibility.compatibilityScore}%)</span>
-          </span>
+        <div className="text-xs text-slate-400 space-y-1.5">
+          <div className="flex flex-wrap gap-x-3 gap-y-1">
+            <span>
+              State:{' '}
+              <strong className="text-slate-200">
+                {(scholarship.eligibleStates ?? ['All India']).join(', ')}
+              </strong>
+            </span>
+            <span aria-hidden="true">·</span>
+            <span>
+              Categories:{' '}
+              <strong className="text-slate-200">
+                {(scholarship.allowedCategories ?? ['All']).join(', ')}
+              </strong>
+            </span>
+          </div>
+          <div>
+            <span>
+              Levels:{' '}
+              <span className="text-slate-300">
+                {(scholarship.educationLevels ?? ['See official portal']).join(', ')}
+              </span>
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-x-3 gap-y-1">
+            <span>
+              Income Cap:{' '}
+              <strong className="font-mono-num text-slate-200">
+                {typeof scholarship.incomeLimitInr === 'number'
+                  ? `₹${scholarship.incomeLimitInr.toLocaleString('en-IN')}`
+                  : 'None specified'}
+              </strong>
+            </span>
+            <span aria-hidden="true">·</span>
+            <span>
+              Profile Match:{' '}
+              <strong
+                className={
+                  eligibility.overallStatus === 'Eligible'
+                    ? 'text-emerald-400'
+                    : eligibility.overallStatus === 'Potentially Eligible'
+                      ? 'text-amber-300'
+                      : eligibility.overallStatus === 'Insufficient Information'
+                        ? 'text-slate-200'
+                        : eligibility.overallStatus === 'Scholarship Status Unverified'
+                          ? 'text-amber-300'
+                          : 'text-rose-400'
+                }
+              >
+                {eligibility.overallStatus}
+              </strong>{' '}
+              <span className="font-mono-num text-slate-400">({eligibility.compatibilityScore}%)</span>
+            </span>
+          </div>
         </div>
       </div>
 
@@ -712,7 +738,11 @@ export default function DiscoveryPage() {
                   className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold btn-primary-gradient rounded-xl disabled:opacity-60"
                 >
                   <Database className="w-3.5 h-3.5" />
-                  <span>{syncing ? 'Publishing Verified Schemes...' : 'Publish 16 Verified Schemes Now'}</span>
+                  <span>
+                    {syncing
+                      ? 'Publishing Verified Schemes...'
+                      : `Publish ${VERIFIED_INDIAN_SCHOLARSHIPS.length} Verified Schemes Now`}
+                  </span>
                 </button>
                 <Link
                   to="/admin"
@@ -786,6 +816,12 @@ export default function DiscoveryPage() {
                 </div>
               </div>
             )}
+
+            <p className="text-xs text-slate-400 px-1">
+              {results.some((r) => r.scholarship.id === 'jharkhand-ekalyan-post-matric')
+                ? 'Scholarship information is provided for guidance. Final eligibility and application approval are determined by the official E-Kalyan portal and concerned authorities.'
+                : 'Scholarship information is provided for guidance. Final eligibility and application approval are determined by the official scholarship portal and concerned authorities.'}
+            </p>
           </div>
         )}
       </PageTransition>
