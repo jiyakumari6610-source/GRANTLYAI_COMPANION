@@ -70,6 +70,7 @@ export default function LandingPage() {
   const [featuredScholarships, setFeaturedScholarships] = useState<Scholarship[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [openFaqIndex, setOpenFaqIndex] = useState<number | null>(0);
+  const [docImageError, setDocImageError] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -283,14 +284,34 @@ export default function LandingPage() {
 
               <RevealSection className="lg:col-span-5" delay={0.05}>
                 <div className="h-full surface-card rounded-2xl overflow-hidden flex flex-col">
-                  <div className="h-48 relative overflow-hidden border-b border-slate-800">
-                    <img
-                      src="/src/assets/images/feature_document_desk_1794554687921.jpg"
-                      alt="Academic marksheets and verification documents organized on a study desk"
-                      referrerPolicy="no-referrer"
-                      className="w-full h-full object-cover opacity-80"
-                    />
-                    <div className="absolute inset-0 bg-gradient-to-t from-[#0B1224] via-transparent to-transparent" />
+                  <div className="h-48 relative overflow-hidden border-b border-slate-800 bg-[#070D1D]">
+                    {!docImageError ? (
+                      <img
+                        src="/images/document-intelligence-desk.jpg"
+                        alt="Academic marksheets and verification documents organized on a study desk"
+                        onError={() => setDocImageError(true)}
+                        className="w-full h-full object-cover opacity-90"
+                      />
+                    ) : (
+                      <div
+                        role="img"
+                        aria-label="Academic marksheets and verification documents organized on a study desk"
+                        className="w-full h-full flex flex-col items-center justify-center gap-2.5 bg-gradient-to-br from-[#0B1329] via-[#0E1835] to-[#070C1B] px-6 text-center"
+                      >
+                        <div className="w-11 h-11 rounded-xl bg-blue-500/15 border border-blue-400/30 flex items-center justify-center text-blue-300">
+                          <FileSearch className="w-5 h-5" />
+                        </div>
+                        <div className="space-y-0.5">
+                          <p className="text-xs font-semibold text-slate-200 font-display">
+                            Academic Document Vault
+                          </p>
+                          <p className="text-[11px] text-slate-400">
+                            Marksheets · Income &amp; Category Certificates
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                    <div className="absolute inset-0 bg-gradient-to-t from-[#0B1224] via-transparent to-transparent pointer-events-none" />
                   </div>
                   <div className="p-6 space-y-2.5 flex-1">
                     <div className="flex items-center gap-2 text-xs font-medium text-blue-300">
